@@ -1,0 +1,32 @@
+# Node
+node_modules/
+dist/
+
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+*.apk
+*.aab
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+nul
+
+# Electron
+release/
+*.exe
+*.dmg
+*.AppImage
+
+# Desktop build
+desktop/dist/
+desktop/release/
+desktop/node_modules/

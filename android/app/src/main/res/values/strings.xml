@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">DeviceDoctor</string>
+
+    <!-- Service -->
+    <string name="service_notification_title">DeviceDoctor Active</string>
+    <string name="service_notification_text">Ready to connect with desktop</string>
+
+    <!-- Permissions -->
+    <string name="permission_sms_rationale">DeviceDoctor needs SMS access to read and send messages from your desktop.</string>
+    <string name="permission_contacts_rationale">DeviceDoctor needs contacts access to sync and manage your contacts from your desktop.</string>
+    <string name="permission_storage_rationale">DeviceDoctor needs storage access to manage files from your desktop.</string>
+    <string name="permission_bluetooth_rationale">DeviceDoctor needs Bluetooth access to connect with your desktop wirelessly.</string>
+
+    <!-- Pairing -->
+    <string name="pairing_title">Pair with Desktop</string>
+    <string name="pairing_scan_qr">Scan QR Code</string>
+    <string name="pairing_confirm_pin">Confirm PIN</string>
+    <string name="pairing_pin_match">Does your desktop show this PIN?</string>
+    <string name="pairing_success">Successfully paired!</string>
+    <string name="pairing_failed">Pairing failed. Please try again.</string>
+
+    <!-- Status -->
+    <string name="status_connected">Connected</string>
+    <string name="status_disconnected">Disconnected</string>
+    <string name="status_connecting">Connecting…</string>
+
+    <!-- Actions -->
+    <string name="action_pair">Pair Device</string>
+    <string name="action_disconnect">Disconnect</string>
+    <string name="action_settings">Settings</string>
+    <string name="action_grant_permissions">Grant Permissions</string>
+
+    <!-- Settings -->
+    <string name="settings_title">Settings</string>
+    <string name="settings_connection">Connection</string>
+    <string name="settings_security">Security</string>
+    <string name="settings_permissions">Permissions</string>
+    <string name="settings_about">About</string>
+</resources>
