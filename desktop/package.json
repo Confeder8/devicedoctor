@@ -2,7 +2,7 @@
   "name": "devicedoctor-desktop",
   "version": "1.0.0",
   "description": "DeviceDoctor - Android Remote Control Desktop Application",
-  "main": "dist/main/main.js",
+  "main": "dist/main/main/main.js",
   "author": "DeviceDoctor Team",
   "license": "MIT",
   "private": true,
@@ -13,7 +13,7 @@
     "publish": "electron-forge publish",
     "lint": "eslint --ext .ts,.tsx src/",
     "dev": "concurrently \"npm run dev:main\" \"npm run dev:renderer\"",
-    "dev:main": "tsc -p tsconfig.main.json && electron dist/main/main.js",
+    "dev:main": "tsc -p tsconfig.main.json && electron dist/main/main/main.js",
     "dev:renderer": "vite",
     "build": "npm run build:main && npm run build:renderer",
     "build:main": "tsc -p tsconfig.main.json",
@@ -23,36 +23,37 @@
     "package:linux": "electron-builder --linux"
   },
   "dependencies": {
-    "axios": "^1.6.5",
-    "socket.io-client": "^4.6.1",
-    "qrcode": "^1.5.3",
-    "node-forge": "^1.3.1",
-    "electron-store": "^8.1.0",
+    "@emotion/react": "^11.11.3",
+    "@emotion/styled": "^11.11.0",
+    "@mui/icons-material": "^5.15.6",
+    "@mui/material": "^5.15.6",
+    "@rollup/rollup-win32-x64-msvc": "^4.57.1",
     "archiver": "^6.0.1",
+    "axios": "^1.6.5",
+    "date-fns": "^3.2.0",
+    "electron-store": "^8.1.0",
     "fs-extra": "^11.2.0",
+    "node-forge": "^1.3.1",
+    "qrcode": "^1.5.3",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-router-dom": "^6.21.3",
-    "@mui/material": "^5.15.6",
-    "@mui/icons-material": "^5.15.6",
-    "@emotion/react": "^11.11.3",
-    "@emotion/styled": "^11.11.0",
-    "zustand": "^4.5.0",
-    "date-fns": "^3.2.0"
+    "socket.io-client": "^4.6.1",
+    "zustand": "^4.5.0"
   },
   "optionalDependencies": {
     "bluetooth-serial-port": "^2.2.7"
   },
   "devDependencies": {
     "@electron-forge/cli": "^7.2.0",
-    "@electron-forge/maker-squirrel": "^7.2.0",
-    "@electron-forge/maker-zip": "^7.2.0",
     "@electron-forge/maker-deb": "^7.2.0",
     "@electron-forge/maker-rpm": "^7.2.0",
+    "@electron-forge/maker-squirrel": "^7.2.0",
+    "@electron-forge/maker-zip": "^7.2.0",
     "@types/node": "^20.11.5",
+    "@types/qrcode": "^1.5.5",
     "@types/react": "^18.2.48",
     "@types/react-dom": "^18.2.18",
-    "@types/qrcode": "^1.5.5",
     "@typescript-eslint/eslint-plugin": "^6.19.1",
     "@typescript-eslint/parser": "^6.19.1",
     "@vitejs/plugin-react": "^4.2.1",
@@ -92,7 +93,10 @@
       "category": "public.app-category.utilities"
     },
     "linux": {
-      "target": ["AppImage", "deb"],
+      "target": [
+        "AppImage",
+        "deb"
+      ],
       "icon": "assets/icon.png",
       "category": "Utility"
     }

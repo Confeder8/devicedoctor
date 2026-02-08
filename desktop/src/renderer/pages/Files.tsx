@@ -3,17 +3,40 @@
  */
 
 import React from 'react'
-import { Box, Typography, Alert } from '@mui/material'
+import { Box, Typography } from '@mui/material'
+import { Folder as FolderIcon } from '@mui/icons-material'
 
 const Files: React.FC = () => {
   return (
-    <Box>
-      <Typography variant="h4" gutterBottom>
-        Files
+    <Box
+      sx={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        py: 12,
+      }}
+    >
+      <Box
+        sx={{
+          width: 72,
+          height: 72,
+          borderRadius: '18px',
+          background: 'linear-gradient(135deg, rgba(0,184,148,0.12) 0%, rgba(85,239,196,0.08) 100%)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          mb: 3,
+        }}
+      >
+        <FolderIcon sx={{ fontSize: 36, color: '#00B894' }} />
+      </Box>
+      <Typography variant="h6" sx={{ mb: 1, fontWeight: 600, color: '#2D3436' }}>
+        No files to browse
       </Typography>
-      <Alert severity="info">
-        File management feature is ready. Connect a device to browse and transfer files.
-      </Alert>
+      <Typography variant="body2" sx={{ color: '#636E72', maxWidth: 320, textAlign: 'center' }}>
+        Connect a device to browse and transfer files between your desktop and Android device.
+      </Typography>
     </Box>
   )
 }

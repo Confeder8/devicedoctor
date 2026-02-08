@@ -40,6 +40,10 @@ class ConnectionManager(
         const val WS_PORT = 8444
         const val UDP_PORT = 8445
         private const val SERVICE_TYPE = "_devicedoctor._tcp"
+
+        @Volatile
+        @JvmStatic
+        var desktopConnected: Boolean = false
     }
 
     /**
@@ -81,12 +85,18 @@ class ConnectionManager(
                         post("/pairing/initiate") {
                             val request = call.receive<Map<String, Any>>()
                             val response = apiRouter.handlePairingInitiate(request)
+                            // Only mark connected if pairing succeeded
+                            val status = response["status"] as? String
+                            if (status == "success") {
+                                desktopConnected = true
+                            }
                             call.respond(response)
                         }
 
                         post("/pairing/complete") {
                             val request = call.receive<Map<String, Any>>()
                             val response = apiRouter.handlePairingComplete(request)
+                            desktopConnected = true
                             call.respond(response)
                         }
 
@@ -100,6 +110,18 @@ class ConnectionManager(
                         delete("/session/revoke") {
                             val sessionId = call.request.header("X-Session-Id")
                             apiRouter.handleSessionRevoke(sessionId)
+                            desktopConnected = false
+                            call.respond(mapOf("status" to "success"))
+                        }
+
+                        // Connection status
+                        post("/connection/disconnect") {
+                            desktopConnected = false
+                            call.respond(mapOf("status" to "success"))
+                        }
+
+                        post("/connection/connect") {
+                            desktopConnected = true
                             call.respond(mapOf("status" to "success"))
                         }
                     }

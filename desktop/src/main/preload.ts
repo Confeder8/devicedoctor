@@ -18,18 +18,20 @@ export interface ElectronAPI {
     onDeviceFound: (callback: (device: any) => void) => () => void
     onDeviceConnected: (callback: (device: any) => void) => () => void
     onDeviceDisconnected: (callback: (deviceId: string) => void) => () => void
+    onDeviceUpdated: (callback: (device: any) => void) => () => void
   }
 
   // Pairing
   pairing: {
     start: (desktopName: string) => Promise<{ qrCode: string; pin: string }>
     cancel: () => Promise<void>
+    connectToDevice: (androidIp: string, androidPort: number) => Promise<any>
     onPairingComplete: (callback: (device: any) => void) => () => void
   }
 
   // Settings
   settings: {
-    getAll: () => Promise<{ autoConnect: boolean; showNotifications: boolean; startOnBoot: boolean }>
+    getAll: () => Promise<{ autoConnect: boolean; showNotifications: boolean; startOnBoot: boolean; discoveryPort: number; pairingPort: number; tunnelHost: string; tunnelPort: number }>
     set: (key: string, value: any) => Promise<void>
     setStartOnBoot: (enabled: boolean) => Promise<void>
   }
@@ -114,12 +116,14 @@ const electronAPI: ElectronAPI = {
     remove: (deviceId) => ipcRenderer.invoke('device:remove', deviceId),
     onDeviceFound: (callback) => createEventListener('device:found', callback),
     onDeviceConnected: (callback) => createEventListener('device:connected', callback),
-    onDeviceDisconnected: (callback) => createEventListener('device:disconnected', callback)
+    onDeviceDisconnected: (callback) => createEventListener('device:disconnected', callback),
+    onDeviceUpdated: (callback) => createEventListener('device:updated', callback)
   },
 
   pairing: {
     start: (desktopName) => ipcRenderer.invoke('pairing:start', desktopName),
     cancel: () => ipcRenderer.invoke('pairing:cancel'),
+    connectToDevice: (androidIp, androidPort) => ipcRenderer.invoke('pairing:connectToDevice', androidIp, androidPort),
     onPairingComplete: (callback) => createEventListener('pairing:complete', callback)
   },
 

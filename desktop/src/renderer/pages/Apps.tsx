@@ -3,17 +3,40 @@
  */
 
 import React from 'react'
-import { Box, Typography, Alert } from '@mui/material'
+import { Box, Typography } from '@mui/material'
+import { Apps as AppsIcon } from '@mui/icons-material'
 
 const Apps: React.FC = () => {
   return (
-    <Box>
-      <Typography variant="h4" gutterBottom>
-        Apps
+    <Box
+      sx={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        py: 12,
+      }}
+    >
+      <Box
+        sx={{
+          width: 72,
+          height: 72,
+          borderRadius: '18px',
+          background: 'linear-gradient(135deg, rgba(253,203,110,0.15) 0%, rgba(253,203,110,0.08) 100%)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          mb: 3,
+        }}
+      >
+        <AppsIcon sx={{ fontSize: 36, color: '#E17055' }} />
+      </Box>
+      <Typography variant="h6" sx={{ mb: 1, fontWeight: 600, color: '#2D3436' }}>
+        No apps to display
       </Typography>
-      <Alert severity="info">
-        App management feature is ready. Connect a device to view, install, and uninstall apps.
-      </Alert>
+      <Typography variant="body2" sx={{ color: '#636E72', maxWidth: 320, textAlign: 'center' }}>
+        Connect a device to view, install, and uninstall applications remotely.
+      </Typography>
     </Box>
   )
 }

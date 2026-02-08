@@ -5,6 +5,7 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import com.google.gson.Gson
+import com.google.gson.GsonBuilder
 import java.security.*
 import java.security.spec.ECGenParameterSpec
 import java.security.spec.X509EncodedKeySpec
@@ -20,7 +21,7 @@ class SecurityManager(private val context: Context) {
     private val keyStore: KeyStore = KeyStore.getInstance("AndroidKeyStore").apply {
         load(null)
     }
-    private val gson = Gson()
+    private val gson = GsonBuilder().disableHtmlEscaping().create()
     private val preferences = context.getSharedPreferences("security", Context.MODE_PRIVATE)
 
     data class PairingData(
@@ -62,9 +63,21 @@ class SecurityManager(private val context: Context) {
         require(pairingData.type == "devicedoctor_pairing") { "Invalid pairing type" }
         require(System.currentTimeMillis() < pairingData.expiresAt) { "QR code expired" }
 
-        // Verify signature
+        // Verify signature — use alphabetically sorted keys to match desktop's JSON.stringify with sorted keys
         val dataCopy = pairingData.copy(signature = "")
-        val dataToVerify = gson.toJson(dataCopy)
+        val sortedMap = java.util.TreeMap<String, Any?>()
+        sortedMap["version"] = dataCopy.version
+        sortedMap["type"] = dataCopy.type
+        sortedMap["timestamp"] = dataCopy.timestamp
+        sortedMap["expiresAt"] = dataCopy.expiresAt
+        sortedMap["desktopId"] = dataCopy.desktopId
+        sortedMap["desktopName"] = dataCopy.desktopName
+        sortedMap["ip"] = dataCopy.ip
+        sortedMap["port"] = dataCopy.port
+        sortedMap["publicKey"] = dataCopy.publicKey
+        sortedMap["pin"] = dataCopy.pin
+        sortedMap["signature"] = ""
+        val dataToVerify = gson.toJson(sortedMap)
         val isValid = verifyPairingSignature(dataToVerify, pairingData.signature, pairingData.pin)
         require(isValid) { "Invalid signature" }
 

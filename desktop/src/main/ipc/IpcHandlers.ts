@@ -36,13 +36,35 @@ export function registerIpcHandlers(
   deviceManager.on('device:found', (device) => forwardEvent('device:found', device))
   deviceManager.on('device:connected', (device) => forwardEvent('device:connected', device))
   deviceManager.on('device:disconnected', (deviceId) => forwardEvent('device:disconnected', deviceId))
+  deviceManager.on('device:updated', (device) => forwardEvent('device:updated', device))
   deviceManager.on('message', ({ deviceId, message }) => {
     // Forward specific message types
     forwardEvent(`${message.type}`, { deviceId, ...message.data })
   })
 
-  // SecurityManager pairing:complete event forwarding
+  // SecurityManager pairing:complete event — register device and forward to renderer
   securityManager.on('pairing:complete', (data) => {
+    // Use tunnel settings for reconnection
+    const tunnelHost = store ? (store.get('settings.tunnelHost', 'brjk01agv.localto.net') as string) : 'brjk01agv.localto.net'
+    const tunnelPort = store ? (store.get('settings.tunnelPort', 7580) as number) : 7580
+
+    // Register device in DeviceManager
+    const device = {
+      deviceId: data.deviceId,
+      deviceName: data.deviceName || 'Android Device',
+      manufacturer: '',
+      model: data.deviceName || 'Android Device',
+      androidVersion: data.androidVersion || 'Unknown',
+      ipAddress: data.ipAddress || tunnelHost,
+      connectionType: 'wifi' as const,
+      connected: true,
+      paired: true,
+      lastSeen: Date.now(),
+      pairedAt: Date.now(),
+      capabilities: ['sms', 'contacts', 'apps', 'files']
+    }
+    deviceManager.addDevice(device)
+
     forwardEvent('pairing:complete', data)
   })
 
@@ -80,6 +102,10 @@ export function registerIpcHandlers(
     securityManager.cancelPairing()
   })
 
+  ipcMain.handle('pairing:connectToDevice', async (_event, androidIp: string, androidPort: number) => {
+    return await securityManager.connectToDevice(androidIp, androidPort)
+  })
+
   // Note: Pairing completion is triggered by Android app via API
   // The SecurityManager handles it, then DeviceManager adds the device
 
@@ -91,6 +117,10 @@ export function registerIpcHandlers(
       autoConnect: store.get('settings.autoConnect', true),
       showNotifications: store.get('settings.showNotifications', true),
       startOnBoot: store.get('settings.startOnBoot', false),
+      discoveryPort: store.get('settings.discoveryPort', 18445),
+      pairingPort: store.get('settings.pairingPort', 18443),
+      tunnelHost: store.get('settings.tunnelHost', 'brjk01agv.localto.net'),
+      tunnelPort: store.get('settings.tunnelPort', 7580),
     }
   })
 

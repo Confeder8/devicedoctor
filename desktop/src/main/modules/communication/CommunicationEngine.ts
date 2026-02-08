@@ -2,6 +2,7 @@
  * Communication Engine - Manages all communication protocols
  */
 
+import * as crypto from 'crypto'
 import { SecurityManager } from '../security/SecurityManager'
 import { WiFiClient } from './clients/WiFiClient'
 import { BluetoothClient } from './clients/BluetoothClient'

@@ -4,6 +4,7 @@
 
 import * as crypto from 'crypto'
 import * as http from 'http'
+import * as dgram from 'dgram'
 import { EventEmitter } from 'events'
 import Store from 'electron-store'
 import QRCode from 'qrcode'
@@ -53,6 +54,8 @@ export class SecurityManager extends EventEmitter {
   private pairingKeyPair: KeyPair | null = null
   private currentPairingData: PairingData | null = null
   private pairingServer: http.Server | null = null
+  private broadcastSocket: dgram.Socket | null = null
+  private broadcastInterval: NodeJS.Timeout | null = null
 
   constructor(store: Store) {
     super()
@@ -61,9 +64,53 @@ export class SecurityManager extends EventEmitter {
   }
 
   /**
+   * Convert raw EC public key to SPKI/X509 DER format for Android compatibility
+   * prime256v1 uncompressed public key is 65 bytes (0x04 + 32 + 32)
+   * SPKI wraps it with ASN.1 header
+   */
+  private rawEcPublicKeyToSpki(rawKey: Buffer): Buffer {
+    // ASN.1 SPKI header for prime256v1/secp256r1 uncompressed point
+    const spkiHeader = Buffer.from([
+      0x30, 0x59, // SEQUENCE (89 bytes)
+      0x30, 0x13, // SEQUENCE (19 bytes) - AlgorithmIdentifier
+      0x06, 0x07, // OID (7 bytes) - ecPublicKey
+      0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01,
+      0x06, 0x08, // OID (8 bytes) - prime256v1
+      0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07,
+      0x03, 0x42, // BIT STRING (66 bytes)
+      0x00        // no unused bits
+    ])
+    return Buffer.concat([spkiHeader, rawKey])
+  }
+
+  /**
+   * Extract raw EC public key from SPKI/X509 DER format (from Android)
+   */
+  private spkiToRawEcPublicKey(spkiKey: Buffer): Buffer {
+    // The raw key starts at offset 26 (after the SPKI header)
+    return spkiKey.subarray(26)
+  }
+
+  /**
+   * Get configured pairing port (default 18443)
+   */
+  getPairingPort(): number {
+    return (this.store.get('settings.pairingPort', 18443) as number)
+  }
+
+  /**
+   * Get configured discovery port (default 18445)
+   */
+  getDiscoveryPort(): number {
+    return (this.store.get('settings.discoveryPort', 18445) as number)
+  }
+
+  /**
    * Initiate pairing process
    */
   async initiatePairing(desktopName: string): Promise<{ qrCode: string; pin: string }> {
+    const pairingPort = this.getPairingPort()
+
     // Generate ECDH key pair
     const ecdh = crypto.createECDH('prime256v1')
     ecdh.generateKeys()
@@ -88,20 +135,18 @@ export class SecurityManager extends EventEmitter {
       desktopId: this.getDesktopId(),
       desktopName,
       ip: localIP,
-      port: 8443,
-      publicKey: this.pairingKeyPair.publicKey.toString('base64'),
+      port: pairingPort,
+      publicKey: this.rawEcPublicKeyToSpki(this.pairingKeyPair.publicKey).toString('base64'),
       pin
     }
 
-    // Sign pairing data
-    const dataToSign = JSON.stringify({
-      ...this.currentPairingData,
-      signature: undefined
-    })
+    // Sign pairing data — sort keys alphabetically to match Gson's serialization on Android
+    const objToSign = { ...this.currentPairingData, signature: '' }
+    const dataToSign = JSON.stringify(objToSign, Object.keys(objToSign).sort())
     const hmac = crypto.createHmac('sha256', pin)
     this.currentPairingData.signature = hmac.update(dataToSign).digest('base64')
 
-    // Generate QR code
+    // Generate QR code (still available as fallback)
     const qrCodeDataURL = await QRCode.toDataURL(
       JSON.stringify(this.currentPairingData),
       { errorCorrectionLevel: 'M', width: 400 }
@@ -110,6 +155,9 @@ export class SecurityManager extends EventEmitter {
     // Start the pairing HTTP server
     await this.startPairingServer()
 
+    // Start broadcasting pairing availability on the network
+    this.startPairingBroadcast(desktopName, localIP, pairingPort)
+
     return { qrCode: qrCodeDataURL, pin }
   }
 
@@ -117,6 +165,8 @@ export class SecurityManager extends EventEmitter {
    * Start temporary HTTP server to receive Android's pairing POST
    */
   private startPairingServer(): Promise<void> {
+    const port = this.getPairingPort()
+
     return new Promise((resolve, reject) => {
       if (this.pairingServer) {
         this.pairingServer.close()
@@ -126,13 +176,25 @@ export class SecurityManager extends EventEmitter {
       this.pairingServer = http.createServer((req, res) => {
         // Set CORS headers
         res.setHeader('Access-Control-Allow-Origin', '*')
-        res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
         res.setHeader('Content-Type', 'application/json')
 
         if (req.method === 'OPTIONS') {
           res.writeHead(200)
           res.end()
+          return
+        }
+
+        // Auto-discovery: Android fetches pairing data via HTTP
+        if (req.method === 'GET' && req.url === '/api/v1/pairing/info') {
+          if (!this.currentPairingData) {
+            res.writeHead(404)
+            res.end(JSON.stringify({ status: 'no_active_pairing' }))
+            return
+          }
+          res.writeHead(200)
+          res.end(JSON.stringify(this.currentPairingData))
           return
         }
 
@@ -182,17 +244,76 @@ export class SecurityManager extends EventEmitter {
         reject(err)
       })
 
-      this.pairingServer.listen(8443, '0.0.0.0', () => {
-        console.log('Pairing server started on port 8443')
+      this.pairingServer.listen(port, '0.0.0.0', () => {
+        console.log(`Pairing server started on port ${port}`)
         resolve()
       })
     })
   }
 
   /**
+   * Start broadcasting pairing availability via UDP
+   */
+  private startPairingBroadcast(desktopName: string, ip: string, pairingPort: number): void {
+    this.stopPairingBroadcast()
+
+    const discoveryPort = this.getDiscoveryPort()
+
+    try {
+      this.broadcastSocket = dgram.createSocket({ type: 'udp4', reuseAddr: true })
+
+      this.broadcastSocket.on('error', (err) => {
+        console.error('Pairing broadcast error:', err)
+      })
+
+      this.broadcastSocket.bind(0, () => {
+        this.broadcastSocket!.setBroadcast(true)
+
+        const message = JSON.stringify({
+          type: 'devicedoctor_pairing_available',
+          desktopName,
+          desktopId: this.getDesktopId(),
+          ip,
+          port: pairingPort,
+          timestamp: Date.now()
+        })
+
+        // Broadcast immediately, then every 2 seconds
+        const sendBroadcast = () => {
+          this.broadcastSocket?.send(
+            message, 0, message.length, discoveryPort, '255.255.255.255',
+            (err) => { if (err) console.error('Broadcast send error:', err) }
+          )
+        }
+
+        sendBroadcast()
+        this.broadcastInterval = setInterval(sendBroadcast, 2000)
+        console.log(`Pairing broadcast started on port ${discoveryPort}`)
+      })
+    } catch (err) {
+      console.error('Failed to start pairing broadcast:', err)
+    }
+  }
+
+  /**
+   * Stop pairing broadcast
+   */
+  private stopPairingBroadcast(): void {
+    if (this.broadcastInterval) {
+      clearInterval(this.broadcastInterval)
+      this.broadcastInterval = null
+    }
+    if (this.broadcastSocket) {
+      try { this.broadcastSocket.close() } catch (_) {}
+      this.broadcastSocket = null
+    }
+  }
+
+  /**
    * Stop the pairing server
    */
   private stopPairingServer(): void {
+    this.stopPairingBroadcast()
     if (this.pairingServer) {
       this.pairingServer.close()
       this.pairingServer = null
@@ -216,8 +337,10 @@ export class SecurityManager extends EventEmitter {
     const ecdh = crypto.createECDH('prime256v1')
     ecdh.setPrivateKey(this.pairingKeyPair.privateKey)
 
-    const androidPubKeyBuffer = Buffer.from(androidPublicKey, 'base64')
-    const sharedSecret = ecdh.computeSecret(androidPubKeyBuffer)
+    const androidPubKeySpki = Buffer.from(androidPublicKey, 'base64')
+    // Android sends SPKI-encoded key; extract raw EC point for ECDH
+    const androidPubKeyRaw = this.spkiToRawEcPublicKey(androidPubKeySpki)
+    const sharedSecret = ecdh.computeSecret(androidPubKeyRaw)
 
     // Derive session keys using HKDF
     const salt = Buffer.from(this.currentPairingData.pin + this.currentPairingData.timestamp)
@@ -479,6 +602,195 @@ export class SecurityManager extends EventEmitter {
    */
   getAllSessions(): Session[] {
     return Array.from(this.activeSessions.values())
+  }
+
+  /**
+   * Connect directly to an Android device by IP and port
+   * Desktop pushes pairing data to Android's HTTP server
+   */
+  async connectToDevice(androidIp: string, androidPort: number): Promise<{ session: Session; pin: string; deviceName: string; androidVersion: string }> {
+    // Generate ECDH key pair
+    const ecdh = crypto.createECDH('prime256v1')
+    ecdh.generateKeys()
+
+    this.pairingKeyPair = {
+      publicKey: ecdh.getPublicKey(),
+      privateKey: ecdh.getPrivateKey()
+    }
+
+    // Generate 6-digit PIN
+    const pin = crypto.randomInt(100000, 999999).toString()
+
+    // Get local IP
+    const localIP = await this.getLocalIP()
+
+    // Build pairing payload to send to Android
+    const pairingPayload = {
+      version: '1.0',
+      type: 'devicedoctor_pairing',
+      timestamp: Date.now(),
+      desktopId: this.getDesktopId(),
+      desktopName: require('os').hostname(),
+      ip: localIP,
+      port: this.getPairingPort(),
+      publicKey: this.rawEcPublicKeyToSpki(this.pairingKeyPair.publicKey).toString('base64'),
+      pin
+    }
+
+    // Sign the payload — sort keys alphabetically to match Gson's serialization on Android
+    const hmac = crypto.createHmac('sha256', pin)
+    const objToSign = { ...pairingPayload, signature: '' }
+    const signature = hmac.update(JSON.stringify(objToSign, Object.keys(objToSign).sort())).digest('base64')
+
+    const payload = { ...pairingPayload, signature }
+
+    // Set currentPairingData so completePairing can use it
+    this.currentPairingData = {
+      ...pairingPayload,
+      type: 'devicedoctor_pairing',
+      expiresAt: Date.now() + 5 * 60 * 1000,
+      signature
+    }
+
+    // POST to Android device
+    const postData = JSON.stringify(payload)
+
+    const response = await new Promise<any>((resolve, reject) => {
+      const req = http.request({
+        hostname: androidIp,
+        port: androidPort,
+        path: '/api/v1/pairing/initiate',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(postData)
+        },
+        timeout: 10000
+      }, (res) => {
+        let body = ''
+        res.on('data', (chunk: Buffer) => { body += chunk.toString() })
+        res.on('end', () => {
+          console.log(`Pairing response status: ${res.statusCode}, body length: ${body.length}`)
+          if (res.statusCode && res.statusCode >= 400) {
+            reject(new Error(`Android device returned HTTP ${res.statusCode}: ${body.substring(0, 200)}`))
+            return
+          }
+          try {
+            resolve(JSON.parse(body))
+          } catch {
+            reject(new Error(`Invalid response from Android device (not JSON): ${body.substring(0, 200)}`))
+          }
+        })
+      })
+
+      req.on('error', (err) => reject(new Error(`Cannot reach Android device: ${err.message}`)))
+      req.on('timeout', () => { req.destroy(); reject(new Error('Connection timed out')) })
+      req.write(postData)
+      req.end()
+    })
+
+    console.log('Pairing response from Android:', JSON.stringify(response, null, 2))
+
+    if (response.status === 'error') {
+      throw new Error(response.error?.message || 'Android rejected pairing')
+    }
+
+    const data = response.data || response
+    const { androidPublicKey, deviceId, challenge, deviceName, androidVersion } = data
+
+    if (!androidPublicKey || !deviceId || !challenge) {
+      throw new Error(`Incomplete response from Android device. Got keys: ${Object.keys(data).join(', ')}`)
+    }
+
+    // Complete pairing on desktop side
+    const result = await this.completePairing(androidPublicKey, deviceId, challenge)
+
+    // Emit event with device metadata
+    this.emit('pairing:complete', {
+      sessionId: result.session.sessionId,
+      deviceId: result.session.deviceId,
+      desktopId: result.session.desktopId,
+      deviceName: deviceName || 'Android Device',
+      androidVersion: androidVersion || 'Unknown',
+      ipAddress: androidIp
+    })
+
+    return { session: result.session, pin, deviceName: deviceName || 'Android Device', androidVersion: androidVersion || 'Unknown' }
+  }
+
+  /**
+   * Generate pairing info for Android to discover via tunnel.
+   * Called by the desktop HTTP server on port 7771.
+   */
+  async generatePairingInfo(desktopName: string): Promise<any> {
+    // Generate ECDH key pair if not already done
+    const ecdh = crypto.createECDH('prime256v1')
+    ecdh.generateKeys()
+
+    this.pairingKeyPair = {
+      publicKey: ecdh.getPublicKey(),
+      privateKey: ecdh.getPrivateKey()
+    }
+
+    const pin = crypto.randomInt(100000, 999999).toString()
+    const localIP = await this.getLocalIP()
+
+    this.currentPairingData = {
+      version: '1.0',
+      type: 'devicedoctor_pairing',
+      timestamp: Date.now(),
+      expiresAt: Date.now() + 5 * 60 * 1000,
+      desktopId: this.getDesktopId(),
+      desktopName,
+      ip: localIP,
+      port: this.getPairingPort(),
+      publicKey: this.rawEcPublicKeyToSpki(this.pairingKeyPair.publicKey).toString('base64'),
+      pin
+    }
+
+    // Sort keys alphabetically to match Gson's serialization order on Android
+    const dataToSign = JSON.stringify({ ...this.currentPairingData, signature: '' }, Object.keys({ ...this.currentPairingData, signature: '' }).sort())
+    const hmac = crypto.createHmac('sha256', pin)
+    this.currentPairingData.signature = hmac.update(dataToSign).digest('base64')
+
+    return this.currentPairingData
+  }
+
+  /**
+   * Complete pairing initiated by Android (Android POSTs its keys to desktop).
+   * Emits 'pairing:complete' so IpcHandlers can register the device in DeviceManager.
+   */
+  async completePairingFromAndroid(data: {
+    androidPublicKey: string
+    deviceId: string
+    challenge: string
+    deviceName?: string
+    androidVersion?: string
+    ipAddress?: string
+  }): Promise<{ session: Session; challengeResponse: string }> {
+    const result = await this.completePairing(data.androidPublicKey, data.deviceId, data.challenge)
+
+    // Emit event so IpcHandlers registers the device in DeviceManager
+    this.emit('pairing:complete', {
+      sessionId: result.session.sessionId,
+      deviceId: result.session.deviceId,
+      desktopId: result.session.desktopId,
+      deviceName: data.deviceName || 'Android Device',
+      androidVersion: data.androidVersion || 'Unknown',
+      ipAddress: data.ipAddress || ''
+    })
+
+    return result
+  }
+
+  /**
+   * Get current pairing data if an active pairing session exists
+   */
+  getCurrentPairingData(): PairingData | null {
+    if (this.currentPairingData && Date.now() < this.currentPairingData.expiresAt) {
+      return this.currentPairingData
+    }
+    return null
   }
 
   /**

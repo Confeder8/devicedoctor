@@ -174,18 +174,46 @@ class ApiRouter(
     }
 
     /**
-     * Handle pairing initiate
+     * Handle pairing initiate — desktop pushes its pairing data, Android completes pairing
      */
     fun handlePairingInitiate(request: Map<String, Any>): Map<String, Any> {
-        // This would be called during pairing process
-        // For now, return placeholder
-        return successResponse(mapOf(
-            "androidPublicKey" to "placeholder",
-            "deviceId" to "device-uuid",
-            "deviceName" to android.os.Build.MODEL,
-            "androidVersion" to android.os.Build.VERSION.RELEASE,
-            "challenge" to "challenge-string"
-        ))
+        try {
+            val publicKey = request["publicKey"] as? String ?: return errorResponse("BadRequest", "Missing publicKey")
+            val desktopId = request["desktopId"] as? String ?: return errorResponse("BadRequest", "Missing desktopId")
+            val desktopName = request["desktopName"] as? String ?: "Unknown Desktop"
+            val pin = request["pin"] as? String ?: return errorResponse("BadRequest", "Missing pin")
+            val ip = request["ip"] as? String ?: "0.0.0.0"
+            val port = (request["port"] as? Double)?.toInt() ?: 18443
+            val timestamp = (request["timestamp"] as? Double)?.toLong() ?: System.currentTimeMillis()
+            val version = request["version"] as? String ?: "1.0"
+            val signature = request["signature"] as? String ?: ""
+
+            val pairingData = SecurityManager.PairingData(
+                version = version,
+                type = "devicedoctor_pairing",
+                timestamp = timestamp,
+                expiresAt = System.currentTimeMillis() + 5 * 60 * 1000,
+                desktopId = desktopId,
+                desktopName = desktopName,
+                ip = ip,
+                port = port,
+                publicKey = publicKey,
+                pin = pin,
+                signature = signature
+            )
+
+            val result = securityManager.completePairing(pairingData)
+
+            return successResponse(mapOf(
+                "androidPublicKey" to result.androidPublicKey,
+                "deviceId" to result.session.deviceId,
+                "challenge" to result.challenge,
+                "deviceName" to android.os.Build.MODEL,
+                "androidVersion" to android.os.Build.VERSION.RELEASE
+            ))
+        } catch (e: Exception) {
+            return errorResponse("PairingFailed", e.message ?: "Pairing failed")
+        }
     }
 
     /**
@@ -218,7 +246,14 @@ class ApiRouter(
      * Handle session revoke
      */
     fun handleSessionRevoke(sessionId: String?) {
-        // Revoke session
+        if (sessionId != null) {
+            securityManager.revokeSession(sessionId)
+        } else {
+            // Revoke all sessions
+            securityManager.getAllSessions().forEach { session ->
+                securityManager.revokeSession(session.deviceId)
+            }
+        }
     }
 
     /**

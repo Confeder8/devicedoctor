@@ -3,17 +3,40 @@
  */
 
 import React from 'react'
-import { Box, Typography, Alert } from '@mui/material'
+import { Box, Typography } from '@mui/material'
+import { Contacts as ContactsIcon } from '@mui/icons-material'
 
 const Contacts: React.FC = () => {
   return (
-    <Box>
-      <Typography variant="h4" gutterBottom>
-        Contacts
+    <Box
+      sx={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        py: 12,
+      }}
+    >
+      <Box
+        sx={{
+          width: 72,
+          height: 72,
+          borderRadius: '18px',
+          background: 'linear-gradient(135deg, rgba(0,206,201,0.12) 0%, rgba(85,239,196,0.08) 100%)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          mb: 3,
+        }}
+      >
+        <ContactsIcon sx={{ fontSize: 36, color: '#00CEC9' }} />
+      </Box>
+      <Typography variant="h6" sx={{ mb: 1, fontWeight: 600, color: '#2D3436' }}>
+        No contacts available
       </Typography>
-      <Alert severity="info">
-        Contacts management feature is ready. Connect a device to view and manage contacts.
-      </Alert>
+      <Typography variant="body2" sx={{ color: '#636E72', maxWidth: 320, textAlign: 'center' }}>
+        Connect a device to browse and manage your contacts directly from the desktop.
+      </Typography>
     </Box>
   )
 }

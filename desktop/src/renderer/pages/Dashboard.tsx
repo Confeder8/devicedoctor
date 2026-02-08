@@ -11,7 +11,6 @@ import {
   Grid,
   Button,
   Chip,
-  Alert,
   Dialog,
   DialogTitle,
   DialogContent,
@@ -29,11 +28,12 @@ import {
   CheckCircle,
   Error as ErrorIcon,
   Close,
+  DevicesOther,
 } from '@mui/icons-material'
 
-const pairingSteps = ['Generate QR', 'Scan & Confirm', 'Connected']
+const pairingSteps = ['Connecting', 'Pairing', 'Connected']
 
-type PairingStatus = 'idle' | 'generating' | 'waiting' | 'success' | 'error'
+type PairingStatus = 'idle' | 'generating' | 'connecting' | 'success' | 'error'
 
 const Dashboard: React.FC = () => {
   const [devices, setDevices] = useState<any[]>([])
@@ -70,10 +70,19 @@ const Dashboard: React.FC = () => {
       )
     })
 
+    const cleanupUpdated = window.electronAPI.device.onDeviceUpdated((device) => {
+      setDevices(prev => {
+        const exists = prev.find(d => d.deviceId === device.deviceId)
+        if (exists) return prev.map(d => d.deviceId === device.deviceId ? { ...d, ...device } : d)
+        return [...prev, device]
+      })
+    })
+
     return () => {
       cleanupFound()
       cleanupConnected()
       cleanupDisconnected()
+      cleanupUpdated()
     }
   }, [])
 
@@ -96,10 +105,15 @@ const Dashboard: React.FC = () => {
     setActiveStep(0)
 
     try {
-      const data = await window.electronAPI.pairing.start('My Computer')
-      setPairingData(data)
-      setPairingStatus('waiting')
+      // Generate pairing data (QR code + PIN) and make it available via tunnel
+      const result = await window.electronAPI.pairing.start(
+        require ? 'DeviceDoctor Desktop' : 'DeviceDoctor Desktop'
+      )
+      setPairingData(result)
+      setPairingStatus('connecting')
       setActiveStep(1)
+      // Now waiting for Android to fetch pairing data via tunnel and complete pairing
+      // The onPairingComplete listener (registered in useEffect) will handle success
     } catch (error: any) {
       setPairingStatus('error')
       setPairingError(error.message || 'Failed to start pairing')
@@ -119,7 +133,7 @@ const Dashboard: React.FC = () => {
   }, [])
 
   const handleClosePairing = useCallback(() => {
-    if (pairingStatus === 'waiting' || pairingStatus === 'generating') {
+    if (pairingStatus === 'connecting') {
       window.electronAPI.pairing.cancel()
     }
     setPairingOpen(false)
@@ -131,8 +145,8 @@ const Dashboard: React.FC = () => {
 
   return (
     <Box>
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 3 }}>
-        <Typography variant="h4">Dashboard</Typography>
+      {/* Add Device Button */}
+      <Box sx={{ display: 'flex', justifyContent: 'flex-end', mb: 3 }}>
         <Button
           variant="contained"
           startIcon={<Add />}
@@ -142,55 +156,156 @@ const Dashboard: React.FC = () => {
         </Button>
       </Box>
 
+      {/* Empty State */}
       {devices.length === 0 && !loading && (
-        <Alert severity="info">
-          No devices connected. Click "Add Device" to pair your Android device.
-        </Alert>
+        <Box
+          sx={{
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            py: 10,
+          }}
+        >
+          <Box
+            sx={{
+              width: 80,
+              height: 80,
+              borderRadius: '20px',
+              background: 'linear-gradient(135deg, rgba(108,92,231,0.12) 0%, rgba(162,155,254,0.12) 100%)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              mb: 3,
+            }}
+          >
+            <DevicesOther sx={{ fontSize: 40, color: '#6C5CE7' }} />
+          </Box>
+          <Typography
+            variant="h6"
+            sx={{ mb: 1, color: '#2D3436', fontWeight: 600 }}
+          >
+            No devices connected
+          </Typography>
+          <Typography
+            variant="body2"
+            sx={{ mb: 3, color: '#636E72', maxWidth: 360, textAlign: 'center' }}
+          >
+            Pair your Android device to start managing SMS, contacts, apps, and files remotely.
+          </Typography>
+          <Button
+            variant="contained"
+            startIcon={<Add />}
+            onClick={handleAddDevice}
+          >
+            Pair Your First Device
+          </Button>
+        </Box>
       )}
 
+      {/* Device Cards */}
       <Grid container spacing={3}>
         {devices.map((device) => (
           <Grid item xs={12} md={6} lg={4} key={device.deviceId}>
-            <Card>
-              <CardContent>
+            <Card sx={{ overflow: 'hidden' }}>
+              {/* Top gradient accent bar */}
+              <Box
+                sx={{
+                  height: 4,
+                  background: device.connected
+                    ? 'linear-gradient(90deg, #00B894 0%, #55EFC4 100%)'
+                    : 'linear-gradient(90deg, #B2BEC3 0%, #DFE6E9 100%)',
+                }}
+              />
+              <CardContent sx={{ pt: 2.5 }}>
                 <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
-                  <PhoneAndroid sx={{ mr: 1, fontSize: 40 }} />
-                  <Box>
-                    <Typography variant="h6">{device.deviceName}</Typography>
-                    <Typography variant="body2" color="text.secondary">
+                  {/* Icon in rounded container */}
+                  <Box
+                    sx={{
+                      width: 48,
+                      height: 48,
+                      borderRadius: '14px',
+                      background: device.connected
+                        ? 'linear-gradient(135deg, rgba(0,184,148,0.1) 0%, rgba(85,239,196,0.1) 100%)'
+                        : 'linear-gradient(135deg, rgba(178,190,195,0.1) 0%, rgba(223,230,233,0.15) 100%)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      mr: 2,
+                    }}
+                  >
+                    <PhoneAndroid
+                      sx={{
+                        fontSize: 26,
+                        color: device.connected ? '#00B894' : '#B2BEC3',
+                      }}
+                    />
+                  </Box>
+                  <Box sx={{ flex: 1, minWidth: 0 }}>
+                    <Typography
+                      variant="subtitle1"
+                      sx={{ fontWeight: 600, color: '#2D3436', lineHeight: 1.3 }}
+                      noWrap
+                    >
+                      {device.deviceName}
+                    </Typography>
+                    <Typography variant="body2" sx={{ color: '#636E72' }} noWrap>
                       {device.manufacturer} {device.model}
                     </Typography>
                   </Box>
                 </Box>
 
-                <Box sx={{ mb: 2 }}>
+                <Box sx={{ display: 'flex', gap: 1, mb: 2 }}>
                   <Chip
                     label={device.connected ? 'Connected' : 'Disconnected'}
-                    color={device.connected ? 'success' : 'default'}
                     size="small"
-                    sx={{ mr: 1 }}
+                    sx={{
+                      backgroundColor: device.connected
+                        ? 'rgba(0,184,148,0.1)'
+                        : 'rgba(178,190,195,0.15)',
+                      color: device.connected ? '#00B894' : '#636E72',
+                      fontWeight: 600,
+                      border: 'none',
+                    }}
                   />
                   <Chip
                     icon={
                       device.connectionType === 'wifi' ? (
-                        <SignalWifi4Bar />
+                        <SignalWifi4Bar sx={{ fontSize: '14px !important' }} />
                       ) : (
-                        <Bluetooth />
+                        <Bluetooth sx={{ fontSize: '14px !important' }} />
                       )
                     }
                     label={device.connectionType?.toUpperCase()}
                     size="small"
+                    sx={{
+                      backgroundColor: 'rgba(108,92,231,0.08)',
+                      color: '#6C5CE7',
+                      fontWeight: 500,
+                      border: 'none',
+                      '& .MuiChip-icon': { color: '#6C5CE7' },
+                    }}
                   />
                 </Box>
 
-                <Typography variant="body2" color="text.secondary">
-                  Android {device.androidVersion}
-                </Typography>
-                <Typography variant="body2" color="text.secondary">
-                  Last seen: {new Date(device.lastSeen).toLocaleString()}
-                </Typography>
+                {/* Info section with subtle background */}
+                <Box
+                  sx={{
+                    backgroundColor: '#F8F9FC',
+                    borderRadius: '10px',
+                    p: 1.5,
+                    mb: 2,
+                  }}
+                >
+                  <Typography variant="body2" sx={{ color: '#636E72', fontSize: '0.8rem' }}>
+                    Android {device.androidVersion}
+                  </Typography>
+                  <Typography variant="body2" sx={{ color: '#636E72', fontSize: '0.8rem' }}>
+                    Last seen: {new Date(device.lastSeen).toLocaleString()}
+                  </Typography>
+                </Box>
 
-                <Box sx={{ mt: 2 }}>
+                <Box>
                   {device.connected ? (
                     <Button
                       variant="outlined"
@@ -228,7 +343,7 @@ const Dashboard: React.FC = () => {
       >
         <DialogTitle sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           Pair with Android Device
-          <Button onClick={handleClosePairing} size="small" sx={{ minWidth: 0 }}>
+          <Button onClick={handleClosePairing} size="small" sx={{ minWidth: 0, color: '#636E72' }}>
             <Close />
           </Button>
         </DialogTitle>
@@ -244,49 +359,57 @@ const Dashboard: React.FC = () => {
 
           {pairingStatus === 'generating' && (
             <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 4 }}>
-              <CircularProgress size={48} />
-              <Typography sx={{ mt: 2 }}>Generating pairing code...</Typography>
+              <CircularProgress size={48} sx={{ color: '#6C5CE7' }} />
+              <Typography sx={{ mt: 2, fontWeight: 500 }}>Generating pairing data...</Typography>
             </Box>
           )}
 
-          {pairingStatus === 'waiting' && pairingData && (
-            <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                Scan this QR code with your Android device, then confirm the PIN.
+          {pairingStatus === 'connecting' && (
+            <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 4 }}>
+              {pairingData?.qrCode && (
+                <Box sx={{ mb: 2 }}>
+                  <img src={pairingData.qrCode} alt="Pairing QR Code" style={{ width: 200, height: 200 }} />
+                </Box>
+              )}
+              {pairingData?.pin && (
+                <Box sx={{
+                  backgroundColor: '#F8F9FC',
+                  borderRadius: '12px',
+                  px: 4, py: 2, mb: 2,
+                  textAlign: 'center'
+                }}>
+                  <Typography variant="body2" color="text.secondary">PIN Code</Typography>
+                  <Typography variant="h4" sx={{ fontWeight: 700, letterSpacing: 6, color: '#6C5CE7' }}>
+                    {pairingData.pin}
+                  </Typography>
+                </Box>
+              )}
+              <CircularProgress size={24} sx={{ color: '#6C5CE7', mb: 1 }} />
+              <Typography sx={{ fontWeight: 500 }}>Waiting for Android device...</Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 1, textAlign: 'center' }}>
+                Open DeviceDoctor on your Android device. It will connect automatically
+                via the tunnel, or scan the QR code if on the same network.
               </Typography>
-
-              <Box
-                component="img"
-                src={pairingData.qrCode}
-                alt="Pairing QR Code"
-                sx={{ width: 280, height: 280, mb: 2 }}
-              />
-
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-                PIN Code
-              </Typography>
-              <Typography
-                variant="h3"
-                sx={{
-                  fontFamily: 'monospace',
-                  fontWeight: 'bold',
-                  letterSpacing: '0.3em',
-                  mb: 2,
-                }}
-              >
-                {pairingData.pin}
-              </Typography>
-
-              <Alert severity="info" sx={{ width: '100%' }}>
-                Make sure the PIN shown on your Android device matches the one above.
-              </Alert>
             </Box>
           )}
 
           {pairingStatus === 'success' && (
             <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 4 }}>
-              <CheckCircle color="success" sx={{ fontSize: 64, mb: 2 }} />
-              <Typography variant="h6">Device Paired Successfully!</Typography>
+              <Box
+                sx={{
+                  width: 72,
+                  height: 72,
+                  borderRadius: '50%',
+                  background: 'linear-gradient(135deg, rgba(0,184,148,0.12) 0%, rgba(85,239,196,0.12) 100%)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  mb: 2,
+                }}
+              >
+                <CheckCircle sx={{ fontSize: 40, color: '#00B894' }} />
+              </Box>
+              <Typography variant="h6" sx={{ fontWeight: 600 }}>Device Paired Successfully!</Typography>
               <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
                 Your Android device is now connected.
               </Typography>
@@ -295,16 +418,29 @@ const Dashboard: React.FC = () => {
 
           {pairingStatus === 'error' && (
             <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 4 }}>
-              <ErrorIcon color="error" sx={{ fontSize: 64, mb: 2 }} />
-              <Typography variant="h6" color="error">Pairing Failed</Typography>
-              <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+              <Box
+                sx={{
+                  width: 72,
+                  height: 72,
+                  borderRadius: '50%',
+                  background: 'linear-gradient(135deg, rgba(225,112,85,0.12) 0%, rgba(225,112,85,0.06) 100%)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  mb: 2,
+                }}
+              >
+                <ErrorIcon sx={{ fontSize: 40, color: '#E17055' }} />
+              </Box>
+              <Typography variant="h6" sx={{ fontWeight: 600, color: '#E17055' }}>Pairing Failed</Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 1, textAlign: 'center' }}>
                 {pairingError}
               </Typography>
             </Box>
           )}
         </DialogContent>
 
-        <DialogActions>
+        <DialogActions sx={{ px: 3, pb: 2.5 }}>
           {pairingStatus === 'success' || pairingStatus === 'error' ? (
             <Button onClick={handleClosePairing} variant="contained">
               Done

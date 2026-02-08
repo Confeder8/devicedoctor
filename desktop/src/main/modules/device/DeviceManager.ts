@@ -118,7 +118,10 @@ export class DeviceManager extends EventEmitter {
   }
 
   /**
-   * Connect to device
+   * Connect to device.
+   * Since the tunnel is one-way (Android → Desktop), we can't directly
+   * reach Android. We just set local state. Android picks it up via
+   * polling the /api/v1/heartbeat endpoint.
    */
   async connect(deviceId: string): Promise<void> {
     const device = this.devices.get(deviceId)
@@ -136,41 +139,20 @@ export class DeviceManager extends EventEmitter {
       throw new Error('No valid session. Please pair device again.')
     }
 
-    // Connect via communication engine
-    await this.communicationEngine.connect({
-      deviceId,
-      connectionType: device.connectionType,
-      ipAddress: device.ipAddress,
-      port: 8443,
-      bluetoothAddress: device.bluetoothAddress
-    })
-
-    // Update device status
+    // Update device status — Android will see this via heartbeat polling
     this.updateDevice(deviceId, {
       connected: true,
       lastSeen: Date.now()
     })
 
-    // Get device info
-    try {
-      const deviceInfo = await this.getDeviceInfo(deviceId)
-      this.updateDevice(deviceId, {
-        batteryLevel: deviceInfo.batteryLevel,
-        storageAvailable: deviceInfo.storageAvailable
-      })
-    } catch (error) {
-      console.error('Failed to get device info:', error)
-    }
-
     this.emit('device:connected', device)
   }
 
   /**
-   * Disconnect from device
+   * Disconnect from device.
+   * Sets local state to disconnected. Android picks it up via heartbeat polling.
    */
   async disconnect(deviceId: string): Promise<void> {
-    await this.communicationEngine.disconnect(deviceId)
-
     this.updateDevice(deviceId, {
       connected: false
     })

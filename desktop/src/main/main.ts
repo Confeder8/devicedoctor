@@ -11,6 +11,7 @@
 import { app, BrowserWindow, ipcMain, Menu, Tray, nativeImage } from 'electron'
 import * as path from 'path'
 import * as fs from 'fs'
+import * as http from 'http'
 import { DeviceManager } from './modules/device/DeviceManager'
 import { SecurityManager } from './modules/security/SecurityManager'
 import { DiscoveryManager } from './modules/discovery/DiscoveryManager'
@@ -19,6 +20,16 @@ import { registerIpcHandlers } from './ipc/IpcHandlers'
 import Store from 'electron-store'
 
 let isQuitting = false
+
+// Prevent EPIPE crashes from broken tunnel connections
+process.on('uncaughtException', (err: any) => {
+  if (err.code === 'EPIPE' || err.code === 'ERR_STREAM_DESTROYED') {
+    console.error('Caught EPIPE error (ignored):', err.message)
+    return
+  }
+  console.error('Uncaught exception:', err)
+  process.exit(1)
+})
 
 class DeviceDoctorApp {
   private mainWindow: BrowserWindow | null = null
@@ -78,6 +89,165 @@ class DeviceDoctorApp {
 
     // Initialize device discovery
     await this.discoveryManager.startDiscovery()
+
+    // Start desktop server on port 7771 for Android to discover via tunnel
+    this.startDesktopServer()
+  }
+
+  /**
+   * Start HTTP server on port 7771 so Android can reach desktop via tunnel.
+   * Desktop is the central server — Android connects to it, not the other way around.
+   *
+   * Endpoints:
+   * - GET /health — health check
+   * - GET /api/v1/pairing/info — pairing data for Android to auto-pair
+   * - POST /api/v1/pairing/complete — Android completes pairing handshake
+   * - GET /api/v1/status — connection state for Android to poll
+   * - POST /api/v1/heartbeat — Android sends device info + checks for commands
+   */
+  private startDesktopServer() {
+    const DESKTOP_PORT = 7771
+    const server = http.createServer((req, res) => {
+      const url = req.url || ''
+
+      res.setHeader('Content-Type', 'application/json')
+
+      if (req.method === 'GET' && url === '/health') {
+        res.writeHead(200)
+        res.end(JSON.stringify({ status: 'ok', app: 'DeviceDoctor Desktop' }))
+        return
+      }
+
+      if (req.method === 'GET' && url === '/api/v1/pairing/info') {
+        // Serve existing pairing data if an active pairing session is in progress
+        const existing = this.securityManager.getCurrentPairingData()
+        if (existing) {
+          res.writeHead(200)
+          res.end(JSON.stringify(existing))
+          return
+        }
+
+        const hasSessions = this.securityManager.getAllSessions().length > 0
+        if (hasSessions) {
+          res.writeHead(200)
+          res.end(JSON.stringify({ status: 'paired', desktopName: require('os').hostname() }))
+          return
+        }
+
+        // No active pairing and no sessions — generate fresh pairing data
+        this.securityManager.generatePairingInfo(require('os').hostname()).then((pairingData) => {
+          res.writeHead(200)
+          res.end(JSON.stringify(pairingData))
+        }).catch((err: any) => {
+          res.writeHead(500)
+          res.end(JSON.stringify({ error: err.message }))
+        })
+        return
+      }
+
+      if (req.method === 'POST' && url === '/api/v1/pairing/complete') {
+        let body = ''
+        req.on('data', (chunk: Buffer) => { body += chunk.toString() })
+        req.on('end', async () => {
+          try {
+            const data = JSON.parse(body)
+            // Capture requester's IP address
+            const remoteIp = req.socket.remoteAddress?.replace(/^::ffff:/, '') || ''
+            data.ipAddress = data.ipAddress || remoteIp
+            const result = await this.securityManager.completePairingFromAndroid(data)
+
+            // Notify renderer
+            const windows = BrowserWindow.getAllWindows()
+            windows.forEach(win => win.webContents.send('pairing:complete', {
+              sessionId: result.session.sessionId,
+              deviceId: result.session.deviceId,
+              desktopId: result.session.desktopId,
+              deviceName: data.deviceName || 'Android Device',
+              androidVersion: data.androidVersion || 'Unknown',
+              ipAddress: remoteIp
+            }))
+
+            res.writeHead(200)
+            res.end(JSON.stringify({
+              status: 'success',
+              sessionId: result.session.sessionId,
+              challengeResponse: result.challengeResponse
+            }))
+          } catch (err: any) {
+            res.writeHead(500)
+            res.end(JSON.stringify({ error: err.message }))
+          }
+        })
+        return
+      }
+
+      // Status endpoint — Android polls this to know if desktop wants connected/disconnected
+      if (req.method === 'GET' && url === '/api/v1/status') {
+        const devices = this.deviceManager.getAllDevices()
+        const sessions = this.securityManager.getAllSessions()
+        res.writeHead(200)
+        res.end(JSON.stringify({
+          status: 'ok',
+          desktopName: require('os').hostname(),
+          hasSessions: sessions.length > 0,
+          devices: devices.map(d => ({
+            deviceId: d.deviceId,
+            connected: d.connected,
+            deviceName: d.deviceName
+          }))
+        }))
+        return
+      }
+
+      // Heartbeat endpoint — Android sends device info, desktop updates device state
+      if (req.method === 'POST' && url === '/api/v1/heartbeat') {
+        let body = ''
+        req.on('data', (chunk: Buffer) => { body += chunk.toString() })
+        req.on('end', () => {
+          try {
+            const data = JSON.parse(body)
+            const deviceId = data.deviceId
+
+            if (deviceId) {
+              const device = this.deviceManager.getDevice(deviceId)
+              if (device) {
+                // Update device with latest info from Android
+                // DeviceManager.updateDevice emits 'device:updated' → IpcHandlers → renderer
+                this.deviceManager.updateDevice(deviceId, {
+                  lastSeen: Date.now(),
+                  batteryLevel: data.batteryLevel,
+                  storageAvailable: data.storageAvailable,
+                  connected: true
+                })
+              }
+            }
+
+            // Respond with desktop's desired connection state
+            const desiredConnected = this.deviceManager.getDevice(deviceId)?.connected ?? true
+            res.writeHead(200)
+            res.end(JSON.stringify({
+              status: 'ok',
+              connected: desiredConnected
+            }))
+          } catch (err: any) {
+            res.writeHead(400)
+            res.end(JSON.stringify({ error: err.message }))
+          }
+        })
+        return
+      }
+
+      res.writeHead(404)
+      res.end(JSON.stringify({ error: 'Not found' }))
+    })
+
+    server.listen(DESKTOP_PORT, '0.0.0.0', () => {
+      console.log(`Desktop server listening on port ${DESKTOP_PORT}`)
+    })
+
+    server.on('error', (err: any) => {
+      console.error(`Desktop server error: ${err.message}`)
+    })
   }
 
   private createMainWindow() {
@@ -96,7 +266,7 @@ class DeviceDoctorApp {
       backgroundColor: '#ffffff'
     }
 
-    const iconPath = path.join(__dirname, '../../../assets/icon.png')
+    const iconPath = path.join(__dirname, '../../../../assets/icon.png')
     if (fs.existsSync(iconPath)) {
       windowOptions.icon = iconPath
     }
@@ -105,10 +275,11 @@ class DeviceDoctorApp {
 
     // Load renderer - use app.isPackaged to detect dev mode
     if (!app.isPackaged) {
-      this.mainWindow.loadURL('http://localhost:3000')
+      const devPort = process.env.DEV_PORT || '3000'
+      this.mainWindow.loadURL(`http://localhost:${devPort}`)
       this.mainWindow.webContents.openDevTools()
     } else {
-      this.mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'))
+      this.mainWindow.loadFile(path.join(__dirname, '../../renderer/index.html'))
     }
 
     // Show window when ready
@@ -130,7 +301,7 @@ class DeviceDoctorApp {
   }
 
   private createTray() {
-    const iconPath = path.join(__dirname, '../../../assets/tray-icon.png')
+    const iconPath = path.join(__dirname, '../../../../assets/tray-icon.png')
     let trayIcon: Electron.NativeImage
     if (fs.existsSync(iconPath)) {
       trayIcon = nativeImage.createFromPath(iconPath)

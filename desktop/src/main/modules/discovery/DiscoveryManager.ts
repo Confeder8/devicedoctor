@@ -69,10 +69,10 @@ export class DiscoveryManager extends EventEmitter {
    * Start UDP broadcast discovery
    */
   private async startUDPDiscovery(): Promise<void> {
-    const UDP_PORT = 8445
+    const UDP_PORT = 18445
     const BROADCAST_INTERVAL = 5000 // 5 seconds
 
-    this.udpSocket = dgram.createSocket('udp4')
+    this.udpSocket = dgram.createSocket({ type: 'udp4', reuseAddr: true })
 
     this.udpSocket.on('message', (message, rinfo) => {
       try {
@@ -84,7 +84,7 @@ export class DiscoveryManager extends EventEmitter {
             deviceId: data.deviceId,
             deviceName: data.deviceName,
             ipAddress: rinfo.address,
-            port: data.port || 8443,
+            port: data.port || 18443,
             manufacturer: data.manufacturer,
             model: data.model,
             androidVersion: data.androidVersion
@@ -97,27 +97,38 @@ export class DiscoveryManager extends EventEmitter {
       }
     })
 
-    this.udpSocket.on('error', (error) => {
-      console.error('UDP discovery error:', error)
+    this.udpSocket.on('error', (error: any) => {
+      if (error.code === 'EADDRINUSE') {
+        console.warn('UDP discovery port in use, skipping UDP discovery')
+      } else {
+        console.error('UDP discovery error:', error)
+      }
     })
 
-    await new Promise<void>((resolve) => {
-      this.udpSocket!.bind(UDP_PORT, () => {
-        this.udpSocket!.setBroadcast(true)
-        resolve()
+    try {
+      await new Promise<void>((resolve, reject) => {
+        this.udpSocket!.bind(UDP_PORT, () => {
+          this.udpSocket!.setBroadcast(true)
+          resolve()
+        })
+        this.udpSocket!.once('error', reject)
       })
-    })
+    } catch (error) {
+      console.warn('Failed to bind UDP discovery socket, continuing without UDP discovery')
+      this.udpSocket = null
+      return
+    }
 
     // Send discovery request periodically
     this.discoveryInterval = setInterval(() => {
-      if (!this.discovering) return
+      if (!this.discovering || !this.udpSocket) return
 
       const message = JSON.stringify({
         type: 'devicedoctor_discover',
         timestamp: Date.now()
       })
 
-      this.udpSocket!.send(
+      this.udpSocket.send(
         message,
         0,
         message.length,

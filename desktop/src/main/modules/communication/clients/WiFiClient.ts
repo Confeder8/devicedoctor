@@ -26,16 +26,11 @@ export class WiFiClient extends EventEmitter {
 
     // Create HTTP client
     this.httpClient = axios.create({
-      baseURL: `https://${ipAddress}:${port}/api/v1`,
+      baseURL: `http://${ipAddress}:${port}/api/v1`,
       timeout: 30000,
       headers: {
         'Content-Type': 'application/json'
-      },
-      // For development - accept self-signed certificates
-      // In production, use certificate pinning
-      httpsAgent: new (require('https').Agent)({
-        rejectUnauthorized: false
-      })
+      }
     })
   }
 
@@ -44,11 +39,8 @@ export class WiFiClient extends EventEmitter {
    */
   async connect(): Promise<void> {
     try {
-      // Test connection
-      await this.httpClient.get('/health')
-
-      // Connect WebSocket
-      await this.connectWebSocket()
+      // Test connection — health endpoint is at root level on Android
+      await axios.get(`http://${this.ipAddress}:${this.port}/health`, { timeout: 5000 })
 
       this.connected = true
     } catch (error) {

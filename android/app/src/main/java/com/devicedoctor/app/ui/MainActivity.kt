@@ -5,14 +5,10 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import android.util.Size
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.annotation.OptIn
-import androidx.camera.core.*
-import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.view.PreviewView
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -21,31 +17,32 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.PhoneAndroid
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.Wifi
 import androidx.core.content.ContextCompat
 import com.devicedoctor.app.security.SecurityManager
 import com.devicedoctor.app.service.DeviceDoctorService
-import com.google.mlkit.vision.barcode.BarcodeScanning
-import com.google.mlkit.vision.barcode.common.Barcode
-import com.google.mlkit.vision.common.InputImage
 import kotlinx.coroutines.*
+import org.json.JSONObject
+import java.net.DatagramPacket
+import java.net.DatagramSocket
 import java.net.HttpURLConnection
 import java.net.URL
 
 enum class Screen {
-    HOME, PERMISSIONS, QR_SCANNER, PIN_CONFIRMATION, PAIRING_RESULT, SETTINGS
+    HOME, PERMISSIONS, DISCOVER_DESKTOPS, PIN_CONFIRMATION, PAIRING_RESULT, SETTINGS
 }
 
 class MainActivity : ComponentActivity() {
@@ -59,9 +56,6 @@ class MainActivity : ComponentActivity() {
         add(PermissionGroup("Contacts", listOf(
             Manifest.permission.READ_CONTACTS,
             Manifest.permission.WRITE_CONTACTS
-        )))
-        add(PermissionGroup("Camera", listOf(
-            Manifest.permission.CAMERA
         )))
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             add(PermissionGroup("Bluetooth", listOf(
@@ -170,9 +164,28 @@ fun MainScreen(
     var pairingSuccess by remember { mutableStateOf(false) }
     var pairingErrorMsg by remember { mutableStateOf("") }
 
+    // Check for active sessions and connection status — poll every 3 seconds
+    val sessions = remember { mutableStateListOf<SecurityManager.Session>() }
+    var isDesktopConnected by remember { mutableStateOf(false) }
+    LaunchedEffect(currentScreen) {
+        if (currentScreen == Screen.HOME) {
+            while (true) {
+                val current = securityManager.getAllSessions()
+                if (current.size != sessions.size) {
+                    sessions.clear()
+                    sessions.addAll(current)
+                }
+                isDesktopConnected = com.devicedoctor.app.connection.ConnectionManager.desktopConnected
+                delay(3000)
+            }
+        }
+    }
+
     when (currentScreen) {
         Screen.HOME -> HomeScreen(
-            onPairClick = { currentScreen = Screen.QR_SCANNER },
+            activeSessions = sessions,
+            isDesktopConnected = isDesktopConnected,
+            onPairClick = { currentScreen = Screen.DISCOVER_DESKTOPS },
             onPermissionsClick = { currentScreen = Screen.PERMISSIONS },
             onSettingsClick = { currentScreen = Screen.SETTINGS }
         )
@@ -182,9 +195,9 @@ fun MainScreen(
             onGrantPermissions = onGrantPermissions,
             onBack = { currentScreen = Screen.HOME }
         )
-        Screen.QR_SCANNER -> QRScannerScreen(
+        Screen.DISCOVER_DESKTOPS -> DiscoverDesktopsScreen(
             securityManager = securityManager,
-            onQRScanned = { data ->
+            onDesktopSelected = { data ->
                 pairingData = data
                 currentScreen = Screen.PIN_CONFIRMATION
             },
@@ -217,10 +230,14 @@ fun MainScreen(
 @kotlin.OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
+    activeSessions: List<SecurityManager.Session>,
+    isDesktopConnected: Boolean = false,
     onPairClick: () -> Unit,
     onPermissionsClick: () -> Unit,
     onSettingsClick: () -> Unit
 ) {
+    val isConnected = isDesktopConnected && activeSessions.isNotEmpty()
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -241,10 +258,11 @@ fun HomeScreen(
             verticalArrangement = Arrangement.Center
         ) {
             Icon(
-                imageVector = Icons.Filled.PhoneAndroid,
+                imageVector = if (isConnected) Icons.Filled.CheckCircle else Icons.Filled.PhoneAndroid,
                 contentDescription = "Device",
                 modifier = Modifier.size(120.dp),
-                tint = MaterialTheme.colorScheme.primary
+                tint = if (isConnected) MaterialTheme.colorScheme.primary
+                       else MaterialTheme.colorScheme.onSurfaceVariant
             )
 
             Spacer(modifier = Modifier.height(32.dp))
@@ -262,9 +280,22 @@ fun HomeScreen(
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Text(
-                        text = "Status: Disconnected",
-                        style = MaterialTheme.typography.bodyLarge
+                        text = if (isConnected) "Status: Connected" else "Status: Disconnected",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = if (isConnected) MaterialTheme.colorScheme.primary
+                               else MaterialTheme.colorScheme.onSurface
                     )
+
+                    if (isConnected) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        activeSessions.forEach { session ->
+                            Text(
+                                text = "Desktop: ${session.desktopId.take(8)}... (${session.desktopIp})",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
 
                     Spacer(modifier = Modifier.height(16.dp))
 
@@ -272,7 +303,7 @@ fun HomeScreen(
                         onClick = onPairClick,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("Pair with Desktop")
+                        Text(if (isConnected) "Pair Another Desktop" else "Pair with Desktop")
                     }
 
                     Spacer(modifier = Modifier.height(8.dp))
@@ -400,24 +431,123 @@ fun PermissionsScreen(
     }
 }
 
-// ==================== QR SCANNER SCREEN ====================
+// ==================== DISCOVER DESKTOPS SCREEN ====================
+
+data class DiscoveredDesktop(
+    val desktopName: String,
+    val desktopId: String,
+    val ip: String,
+    val port: Int,
+    val timestamp: Long
+)
 
 @kotlin.OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun QRScannerScreen(
+fun DiscoverDesktopsScreen(
     securityManager: SecurityManager,
-    onQRScanned: (SecurityManager.PairingData) -> Unit,
+    onDesktopSelected: (SecurityManager.PairingData) -> Unit,
     onBack: () -> Unit
 ) {
+    val discoveredDesktops = remember { mutableStateListOf<DiscoveredDesktop>() }
+    var isSearching by remember { mutableStateOf(true) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
-    var scanned by remember { mutableStateOf(false) }
+    var showManualEntry by remember { mutableStateOf(false) }
+    var manualIp by remember { mutableStateOf("") }
+    var manualPort by remember { mutableStateOf("18443") }
+    var isConnecting by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    // UDP Discovery listener
+    DisposableEffect(Unit) {
+        val discoveryPort = 18445
+        var socket: DatagramSocket? = null
+        val job = scope.launch(Dispatchers.IO) {
+            try {
+                socket = DatagramSocket(null)
+                socket!!.reuseAddress = true
+                socket!!.broadcast = true
+                socket!!.bind(java.net.InetSocketAddress(discoveryPort))
+                socket!!.soTimeout = 1000
+
+                while (isActive) {
+                    try {
+                        val buf = ByteArray(4096)
+                        val packet = DatagramPacket(buf, buf.size)
+                        socket!!.receive(packet)
+                        val data = String(packet.data, 0, packet.length)
+                        val json = JSONObject(data)
+
+                        if (json.optString("type") == "devicedoctor_pairing_available") {
+                            val desktop = DiscoveredDesktop(
+                                desktopName = json.optString("desktopName", "Unknown"),
+                                desktopId = json.optString("desktopId", ""),
+                                ip = json.optString("ip", packet.address.hostAddress ?: ""),
+                                port = json.optInt("port", 18443),
+                                timestamp = json.optLong("timestamp", 0)
+                            )
+
+                            withContext(Dispatchers.Main) {
+                                val existing = discoveredDesktops.indexOfFirst { it.desktopId == desktop.desktopId }
+                                if (existing >= 0) {
+                                    discoveredDesktops[existing] = desktop
+                                } else {
+                                    discoveredDesktops.add(desktop)
+                                }
+                            }
+                        }
+                    } catch (_: java.net.SocketTimeoutException) {
+                        // Expected, just loop again
+                    }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    if (discoveredDesktops.isEmpty()) {
+                        errorMessage = "Discovery error: ${e.message}"
+                    }
+                }
+            }
+        }
+
+        onDispose {
+            job.cancel()
+            try { socket?.close() } catch (_: Exception) {}
+        }
+    }
+
+    fun fetchPairingDataAndConnect(ip: String, port: Int) {
+        isConnecting = true
+        errorMessage = null
+        scope.launch {
+            try {
+                val pairingData = withContext(Dispatchers.IO) {
+                    val url = URL("http://$ip:$port/api/v1/pairing/info")
+                    val conn = url.openConnection() as HttpURLConnection
+                    conn.requestMethod = "GET"
+                    conn.connectTimeout = 5000
+                    conn.readTimeout = 5000
+
+                    val responseCode = conn.responseCode
+                    if (responseCode != 200) {
+                        throw Exception("Desktop not ready (status $responseCode)")
+                    }
+
+                    val body = conn.inputStream.bufferedReader().readText()
+                    securityManager.processPairingQR(body)
+                }
+                onDesktopSelected(pairingData)
+            } catch (e: Exception) {
+                errorMessage = e.message ?: "Failed to connect"
+                isConnecting = false
+            }
+        }
+    }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Scan QR Code") },
+                title = { Text("Discover Desktops") },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    IconButton(onClick = onBack, enabled = !isConnecting) {
                         Icon(Icons.Filled.ArrowBack, contentDescription = "Back")
                     }
                 }
@@ -427,121 +557,144 @@ fun QRScannerScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(paddingValues),
+                .padding(paddingValues)
+                .padding(16.dp)
+                .verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            Icon(
+                imageVector = Icons.Filled.Wifi,
+                contentDescription = null,
+                modifier = Modifier.size(48.dp),
+                tint = MaterialTheme.colorScheme.primary
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
             Text(
-                text = "Point your camera at the QR code on the desktop app",
+                text = "Looking for desktops on your network...",
                 style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.padding(16.dp),
                 textAlign = TextAlign.Center
             )
 
-            if (errorMessage != null) {
-                Text(
-                    text = errorMessage!!,
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.padding(horizontal = 16.dp)
-                )
+            Text(
+                text = "Make sure you clicked \"Add Device\" in the desktop app first.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(top = 4.dp, bottom = 16.dp)
+            )
+
+            if (isConnecting) {
+                CircularProgressIndicator()
                 Spacer(modifier = Modifier.height(8.dp))
-            }
-
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-                    .padding(16.dp)
-            ) {
-                CameraPreviewWithBarcodeScanner(
-                    onBarcodeDetected = { rawValue ->
-                        if (scanned) return@CameraPreviewWithBarcodeScanner
-                        scanned = true
-                        try {
-                            val pairingData = securityManager.processPairingQR(rawValue)
-                            onQRScanned(pairingData)
-                        } catch (e: Exception) {
-                            errorMessage = e.message ?: "Invalid QR code"
-                            scanned = false
-                        }
-                    }
-                )
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalGetImage::class)
-@Composable
-fun CameraPreviewWithBarcodeScanner(
-    onBarcodeDetected: (String) -> Unit
-) {
-    val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
-    val barcodeScanner = remember { BarcodeScanning.getClient() }
-
-    AndroidView(
-        modifier = Modifier.fillMaxSize(),
-        factory = { ctx ->
-            val previewView = PreviewView(ctx)
-
-            val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
-            cameraProviderFuture.addListener({
-                val cameraProvider = cameraProviderFuture.get()
-
-                val preview = Preview.Builder().build().also {
-                    it.setSurfaceProvider(previewView.surfaceProvider)
+                Text("Connecting...")
+            } else {
+                if (errorMessage != null) {
+                    Text(
+                        text = errorMessage!!,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
                 }
 
-                val imageAnalyzer = ImageAnalysis.Builder()
-                    .setTargetResolution(Size(1280, 720))
-                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                    .build()
-                    .also { analysis ->
-                        analysis.setAnalyzer(
-                            ContextCompat.getMainExecutor(ctx)
-                        ) { imageProxy ->
-                            val mediaImage = imageProxy.image
-                            if (mediaImage != null) {
-                                val inputImage = InputImage.fromMediaImage(
-                                    mediaImage,
-                                    imageProxy.imageInfo.rotationDegrees
+                // Discovered desktops list
+                if (discoveredDesktops.isNotEmpty()) {
+                    Text(
+                        text = "Found ${discoveredDesktops.size} desktop(s):",
+                        style = MaterialTheme.typography.titleSmall,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 8.dp)
+                    )
+
+                    discoveredDesktops.forEach { desktop ->
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp)
+                                .clickable { fetchPairingDataAndConnect(desktop.ip, desktop.port) }
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(16.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Computer,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(40.dp),
+                                    tint = MaterialTheme.colorScheme.primary
                                 )
-                                barcodeScanner.process(inputImage)
-                                    .addOnSuccessListener { barcodes ->
-                                        for (barcode in barcodes) {
-                                            if (barcode.valueType == Barcode.TYPE_TEXT) {
-                                                barcode.rawValue?.let { raw ->
-                                                    onBarcodeDetected(raw)
-                                                }
-                                            }
-                                        }
-                                    }
-                                    .addOnCompleteListener {
-                                        imageProxy.close()
-                                    }
-                            } else {
-                                imageProxy.close()
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = desktop.desktopName,
+                                        style = MaterialTheme.typography.titleMedium
+                                    )
+                                    Text(
+                                        text = "${desktop.ip}:${desktop.port}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
                         }
                     }
-
-                try {
-                    cameraProvider.unbindAll()
-                    cameraProvider.bindToLifecycle(
-                        lifecycleOwner,
-                        CameraSelector.DEFAULT_BACK_CAMERA,
-                        preview,
-                        imageAnalyzer
+                } else {
+                    // Searching indicator
+                    CircularProgressIndicator(modifier = Modifier.padding(16.dp))
+                    Text(
+                        text = "Searching...",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                } catch (e: Exception) {
-                    e.printStackTrace()
                 }
-            }, ContextCompat.getMainExecutor(ctx))
 
-            previewView
+                Spacer(modifier = Modifier.height(24.dp))
+                Divider()
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Manual entry section
+                TextButton(onClick = { showManualEntry = !showManualEntry }) {
+                    Text(if (showManualEntry) "Hide manual entry" else "Enter IP address manually")
+                }
+
+                if (showManualEntry) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = manualIp,
+                        onValueChange = { manualIp = it },
+                        label = { Text("Desktop IP Address") },
+                        placeholder = { Text("e.g. 192.168.1.100") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = manualPort,
+                        onValueChange = { manualPort = it },
+                        label = { Text("Pairing Port") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Button(
+                        onClick = {
+                            val port = manualPort.toIntOrNull() ?: 18443
+                            fetchPairingDataAndConnect(manualIp.trim(), port)
+                        },
+                        enabled = manualIp.isNotBlank(),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Connect")
+                    }
+                }
+            }
         }
-    )
+    }
 }
 
 // ==================== PIN CONFIRMATION SCREEN ====================
@@ -824,13 +977,20 @@ fun SettingsScreen(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Network info
+            // Network & Tunnel info
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Network", style = MaterialTheme.typography.titleMedium)
+                    Text("Network & Tunnel", style = MaterialTheme.typography.titleMedium)
                     Spacer(modifier = Modifier.height(8.dp))
-                    InfoRow("HTTP Port", "8443")
-                    InfoRow("WebSocket Port", "8444")
+                    InfoRow("Local HTTP Port", "8443")
+                    InfoRow("Tunnel Host", "brjk01agv.localto.net")
+                    InfoRow("Tunnel Port", "7580")
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "The tunnel forwards traffic from the remote address to this device's local port 8443.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
 
