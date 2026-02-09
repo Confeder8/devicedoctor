@@ -64,12 +64,13 @@ export class WiFiClient extends EventEmitter {
   /**
    * Send encrypted request
    */
-  async sendRequest(encrypted: { ciphertext: string; iv: string; authTag: string }): Promise<any> {
+  async sendRequest(encrypted: { ciphertext: string; iv: string; authTag: string }, sessionId?: string): Promise<any> {
     try {
       const response = await this.httpClient.post('/request', {
         encrypted: encrypted.ciphertext,
         iv: encrypted.iv,
-        tag: encrypted.authTag
+        tag: encrypted.authTag,
+        ...(sessionId && { sessionId })
       })
 
       return response.data

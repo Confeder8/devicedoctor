@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.Wifi
 import androidx.core.content.ContextCompat
+import com.devicedoctor.app.connection.ConnectionManager
 import com.devicedoctor.app.security.SecurityManager
 import com.devicedoctor.app.service.DeviceDoctorService
 import kotlinx.coroutines.*
@@ -783,7 +784,12 @@ fun PinConfirmationScreen(
                                         {
                                             "androidPublicKey": "${result.androidPublicKey}",
                                             "deviceId": "${result.session.deviceId}",
-                                            "challenge": "${result.challenge}"
+                                            "challenge": "${result.challenge}",
+                                            "deviceName": "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}",
+                                            "manufacturer": "${android.os.Build.MANUFACTURER}",
+                                            "model": "${android.os.Build.MODEL}",
+                                            "androidVersion": "${android.os.Build.VERSION.RELEASE}",
+                                            "androidPort": ${ConnectionManager.HTTP_PORT}
                                         }
                                     """.trimIndent()
 

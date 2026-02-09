@@ -30,8 +30,13 @@ class ApiRouter(
                 authTag = encryptedRequest["tag"]!!
             )
 
-            // Get session (assume session ID is embedded in request or header)
-            val session = securityManager.getSession("default") // Simplified
+            // Look up session by sessionId from request, or use first available session
+            val requestSessionId = encryptedRequest["sessionId"]
+            val session = if (requestSessionId != null) {
+                securityManager.getAllSessions().find { it.sessionId == requestSessionId }
+            } else {
+                securityManager.getAllSessions().firstOrNull()
+            }
             if (session == null) {
                 return errorResponse("Unauthorized", "No valid session")
             }

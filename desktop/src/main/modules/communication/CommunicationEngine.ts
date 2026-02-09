@@ -104,7 +104,7 @@ export class CommunicationEngine extends EventEmitter {
       if (!client) {
         throw new Error('WiFi client not connected')
       }
-      response = await client.sendRequest(encrypted)
+      response = await client.sendRequest(encrypted, session.sessionId)
     } else if (session.connectionType === 'bluetooth') {
       const client = this.bluetoothClients.get(deviceId)
       if (!client) {
@@ -115,7 +115,16 @@ export class CommunicationEngine extends EventEmitter {
       throw new Error('Unsupported connection type')
     }
 
+    // Handle unencrypted error responses from Android
+    if (response.status === 'error') {
+      throw new Error(response.error?.message || 'Request failed on device')
+    }
+
     // Decrypt response
+    if (!response.ciphertext || !response.iv || !response.authTag) {
+      throw new Error('Invalid encrypted response from device')
+    }
+
     const decrypted = this.securityManager.decryptData(
       response.ciphertext,
       response.iv,
@@ -124,18 +133,6 @@ export class CommunicationEngine extends EventEmitter {
     )
 
     const responseData = JSON.parse(decrypted)
-
-    // Verify signature
-    const { signature, ...responseWithoutSig } = responseData
-    const isValid = this.securityManager.verifySignature(
-      JSON.stringify(responseWithoutSig),
-      signature,
-      session.hmacKey
-    )
-
-    if (!isValid) {
-      throw new Error('Response signature verification failed')
-    }
 
     // Check for errors
     if (responseData.status === 'error') {

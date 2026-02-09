@@ -156,16 +156,8 @@ class DeviceDoctorApp {
             data.ipAddress = data.ipAddress || remoteIp
             const result = await this.securityManager.completePairingFromAndroid(data)
 
-            // Notify renderer
-            const windows = BrowserWindow.getAllWindows()
-            windows.forEach(win => win.webContents.send('pairing:complete', {
-              sessionId: result.session.sessionId,
-              deviceId: result.session.deviceId,
-              desktopId: result.session.desktopId,
-              deviceName: data.deviceName || 'Android Device',
-              androidVersion: data.androidVersion || 'Unknown',
-              ipAddress: remoteIp
-            }))
+            // Note: IpcHandlers listens for SecurityManager's pairing:complete event
+            // and handles device registration + renderer notification. No duplicate send here.
 
             res.writeHead(200)
             res.end(JSON.stringify({
@@ -219,6 +211,22 @@ class DeviceDoctorApp {
                   storageAvailable: data.storageAvailable,
                   connected: true
                 })
+
+                // Auto-reconnect WiFiClient if not connected (e.g., after ADB forward was re-established)
+                if (!this.communicationEngine.isConnected(deviceId) && device.ipAddress) {
+                  const port = (device.ipAddress === '127.0.0.1' || device.ipAddress === '::1') ? 18443 : 8443
+                  console.log(`Heartbeat: WiFiClient not connected, attempting reconnect to ${device.ipAddress}:${port}`)
+                  this.communicationEngine.connect({
+                    deviceId,
+                    connectionType: 'wifi',
+                    ipAddress: device.ipAddress,
+                    port
+                  }).then(() => {
+                    console.log(`WiFiClient auto-reconnected to ${device.ipAddress}:${port}`)
+                  }).catch((err: any) => {
+                    console.log(`WiFiClient reconnect failed: ${err.message}`)
+                  })
+                }
               }
             }
 

@@ -765,7 +765,10 @@ export class SecurityManager extends EventEmitter {
     deviceId: string
     challenge: string
     deviceName?: string
+    manufacturer?: string
+    model?: string
     androidVersion?: string
+    androidPort?: number
     ipAddress?: string
   }): Promise<{ session: Session; challengeResponse: string }> {
     const result = await this.completePairing(data.androidPublicKey, data.deviceId, data.challenge)
@@ -776,7 +779,10 @@ export class SecurityManager extends EventEmitter {
       deviceId: result.session.deviceId,
       desktopId: result.session.desktopId,
       deviceName: data.deviceName || 'Android Device',
+      manufacturer: data.manufacturer || '',
+      model: data.model || data.deviceName || 'Android Device',
       androidVersion: data.androidVersion || 'Unknown',
+      androidPort: data.androidPort || 8443,
       ipAddress: data.ipAddress || ''
     })
 

@@ -44,6 +44,26 @@ class ConnectionManager(
         @Volatile
         @JvmStatic
         var desktopConnected: Boolean = false
+
+        /** Active WebSocket sessions for broadcasting */
+        private val wsConnections = java.util.concurrent.ConcurrentHashMap<String, WebSocketSession>()
+
+        /**
+         * Broadcast a JSON message to all connected WebSocket clients
+         */
+        @JvmStatic
+        fun broadcastWebSocket(type: String, payload: Map<String, Any?>) {
+            val message = com.google.gson.Gson().toJson(mapOf("type" to type, "data" to payload))
+            wsConnections.values.forEach { session ->
+                try {
+                    kotlinx.coroutines.runBlocking {
+                        session.send(Frame.Text(message))
+                    }
+                } catch (e: Exception) {
+                    // Connection may have closed, ignore
+                }
+            }
+        }
     }
 
     /**
@@ -150,20 +170,24 @@ class ConnectionManager(
 
                 routing {
                     webSocket("/ws") {
+                        val sessionId = java.util.UUID.randomUUID().toString()
+                        wsConnections[sessionId] = this
+                        println("WebSocket client connected: $sessionId")
                         try {
-                            // Handle WebSocket connection
                             for (frame in incoming) {
                                 when (frame) {
                                     is Frame.Text -> {
                                         val text = frame.readText()
-                                        // Handle authentication
-                                        println("WebSocket message: $text")
+                                        println("WebSocket message from $sessionId: $text")
                                     }
                                     else -> {}
                                 }
                             }
                         } catch (e: Exception) {
                             e.printStackTrace()
+                        } finally {
+                            wsConnections.remove(sessionId)
+                            println("WebSocket client disconnected: $sessionId")
                         }
                     }
                 }

@@ -43,19 +43,25 @@ export function registerIpcHandlers(
   })
 
   // SecurityManager pairing:complete event — register device and forward to renderer
-  securityManager.on('pairing:complete', (data) => {
-    // Use tunnel settings for reconnection
-    const tunnelHost = store ? (store.get('settings.tunnelHost', 'brjk01agv.localto.net') as string) : 'brjk01agv.localto.net'
-    const tunnelPort = store ? (store.get('settings.tunnelPort', 7580) as number) : 7580
+  securityManager.on('pairing:complete', async (data) => {
+    let androidPort = data.androidPort || 8443
+    const ipAddress = data.ipAddress || '127.0.0.1'
+
+    // When connecting from emulator (127.0.0.1), use ADB-forwarded port
+    // adb forward tcp:18443 tcp:8443 maps localhost:18443 → emulator:8443
+    if (ipAddress === '127.0.0.1' || ipAddress === '::1') {
+      androidPort = 18443
+      console.log('Emulator detected, using ADB-forwarded port 18443')
+    }
 
     // Register device in DeviceManager
     const device = {
       deviceId: data.deviceId,
       deviceName: data.deviceName || 'Android Device',
-      manufacturer: '',
-      model: data.deviceName || 'Android Device',
+      manufacturer: data.manufacturer || '',
+      model: data.model || data.deviceName || 'Android Device',
       androidVersion: data.androidVersion || 'Unknown',
-      ipAddress: data.ipAddress || tunnelHost,
+      ipAddress: ipAddress,
       connectionType: 'wifi' as const,
       connected: true,
       paired: true,
@@ -64,6 +70,20 @@ export function registerIpcHandlers(
       capabilities: ['sms', 'contacts', 'apps', 'files']
     }
     deviceManager.addDevice(device)
+
+    // Create WiFiClient so CommunicationEngine can send requests to Android
+    try {
+      await communicationEngine.connect({
+        deviceId: data.deviceId,
+        connectionType: 'wifi',
+        ipAddress: ipAddress,
+        port: androidPort
+      })
+      console.log(`WiFiClient connected to ${ipAddress}:${androidPort} for device ${data.deviceId}`)
+    } catch (err) {
+      console.error('Failed to create WiFiClient after pairing:', err)
+      // Device is still registered, but services won't work until connected
+    }
 
     forwardEvent('pairing:complete', data)
   })
@@ -80,6 +100,26 @@ export function registerIpcHandlers(
 
   ipcMain.handle('device:connect', async (_event, deviceId: string) => {
     await deviceManager.connect(deviceId)
+
+    // Also create WiFiClient if not already connected
+    if (!communicationEngine.isConnected(deviceId)) {
+      const device = deviceManager.getDevice(deviceId)
+      if (device && device.ipAddress) {
+        // Use ADB-forwarded port for emulator connections
+        const port = (device.ipAddress === '127.0.0.1' || device.ipAddress === '::1') ? 18443 : 8443
+        try {
+          await communicationEngine.connect({
+            deviceId,
+            connectionType: 'wifi',
+            ipAddress: device.ipAddress,
+            port
+          })
+        } catch (err) {
+          console.error('Failed to create WiFiClient on connect:', err)
+        }
+      }
+    }
+
     return { success: true }
   })
 

@@ -53,6 +53,7 @@ class DeviceDoctorService : Service() {
         serviceScope.launch {
             try {
                 connectionManager.startWiFiServer()
+                connectionManager.startWebSocketServer()
                 connectionManager.startBluetoothServer()
                 connectionManager.broadcastPresence()
             } catch (e: Exception) {
@@ -247,8 +248,11 @@ class DeviceDoctorService : Service() {
                             put("androidPublicKey", result.androidPublicKey)
                             put("deviceId", result.session.deviceId)
                             put("challenge", result.challenge)
-                            put("deviceName", android.os.Build.MODEL)
+                            put("deviceName", "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
+                            put("manufacturer", android.os.Build.MANUFACTURER)
+                            put("model", android.os.Build.MODEL)
                             put("androidVersion", android.os.Build.VERSION.RELEASE)
+                            put("androidPort", ConnectionManager.HTTP_PORT)
                         }.toString()
 
                         completeConn.outputStream.use { it.write(postBody.toByteArray()) }
@@ -282,8 +286,9 @@ class DeviceDoctorService : Service() {
         const val NOTIFICATION_ID = 1001
         const val ACTION_START = "com.devicedoctor.app.action.START"
         const val ACTION_STOP = "com.devicedoctor.app.action.STOP"
-        // Tunnel forwards brjk01agv.localto.net:7580 → desktop's localhost:7771
-        const val DESKTOP_TUNNEL_HOST = "brjk01agv.localto.net"
-        const val DESKTOP_TUNNEL_PORT = 7580
+        // For emulator testing: 10.0.2.2 maps to host's localhost
+        // For production tunnel: use "brjk01agv.localto.net" port 7580
+        const val DESKTOP_TUNNEL_HOST = "10.0.2.2"
+        const val DESKTOP_TUNNEL_PORT = 7771
     }
 }
