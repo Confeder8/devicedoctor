@@ -10,7 +10,6 @@ import {
   IconButton,
   InputAdornment,
   CircularProgress,
-  Chip,
   Dialog,
   DialogTitle,
   DialogContent,
@@ -20,7 +19,6 @@ import {
   Snackbar,
   Alert,
   Card,
-  CardContent,
   LinearProgress,
   Breadcrumbs,
   Link,
@@ -41,14 +39,12 @@ import {
   InsertDriveFile,
   Search,
   Delete,
-  Close,
   CloudUpload,
   CloudDownload,
   CreateNewFolder,
   ArrowBack,
   Home,
   MoreVert,
-  DriveFileMove,
   Image,
   VideoFile,
   AudioFile,
@@ -232,7 +228,7 @@ const Files: React.FC = () => {
   }
 
   const filteredFiles = useMemo(() => {
-    let result = files.filter(f => f.name?.toLowerCase().includes(searchQuery.toLowerCase()))
+    const result = files.filter(f => f.name?.toLowerCase().includes(searchQuery.toLowerCase()))
     // Directories first, then sort
     const dirs = result.filter(f => f.type === 'directory')
     const fileItems = result.filter(f => f.type === 'file')

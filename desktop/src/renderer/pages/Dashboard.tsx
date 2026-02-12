@@ -172,7 +172,7 @@ const Dashboard: React.FC = () => {
 
   // Listen for pairing completion
   useEffect(() => {
-    const cleanup = window.electronAPI.pairing.onPairingComplete((device) => {
+    const cleanup = window.electronAPI.pairing.onPairingComplete(() => {
       setPairingStatus('success')
       setActiveStep(2)
       // Reload devices after a short delay
@@ -457,7 +457,7 @@ const Dashboard: React.FC = () => {
               <CircularProgress size={48} sx={{ color: '#6C5CE7', mb: 2 }} />
               <Typography sx={{ fontWeight: 500 }}>Waiting for Android device...</Typography>
               <Typography variant="body2" color="text.secondary" sx={{ mt: 1, textAlign: 'center' }}>
-                Open DeviceDoctor on your Android device and tap "Pair with Desktop".
+                Open DeviceDoctor on your Android device and tap &quot;Pair with Desktop&quot;.
                 It will connect automatically.
               </Typography>
             </Box>

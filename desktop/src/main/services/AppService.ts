@@ -2,6 +2,7 @@
  * App Service - Handles app management operations
  */
 
+import * as path from 'path'
 import { CommunicationEngine } from '../modules/communication/CommunicationEngine'
 
 export interface AppInfo {
@@ -56,7 +57,7 @@ export class AppService {
     onProgress?: (progress: number) => void
   ): Promise<any> {
     // Use file service to upload APK
-    const remotePath = `/sdcard/Download/${require('path').basename(apkPath)}`
+    const remotePath = `/sdcard/Download/${path.basename(apkPath)}`
 
     await this.communicationEngine.uploadFile(
       deviceId,

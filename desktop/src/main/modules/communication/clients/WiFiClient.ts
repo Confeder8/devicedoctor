@@ -43,6 +43,11 @@ export class WiFiClient extends EventEmitter {
       await axios.get(`http://${this.ipAddress}:${this.port}/health`, { timeout: 5000 })
 
       this.connected = true
+
+      // Establish WebSocket for real-time events (non-blocking)
+      this.connectWebSocket().catch((err) => {
+        console.log(`WebSocket connection skipped: ${err.message}`)
+      })
     } catch (error) {
       throw new Error(`Failed to connect: ${(error as Error).message}`)
     }

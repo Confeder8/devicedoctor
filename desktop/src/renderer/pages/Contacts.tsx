@@ -15,7 +15,6 @@ import {
   Avatar,
   InputAdornment,
   CircularProgress,
-  Chip,
   Dialog,
   DialogTitle,
   DialogContent,
@@ -24,18 +23,12 @@ import {
   Tooltip,
   Snackbar,
   Alert,
-  Grid,
   Card,
   CardContent,
-  Fab,
-  Divider,
-  Menu,
-  MenuItem,
 } from '@mui/material'
 import {
   Contacts as ContactsIcon,
   Search,
-  Add,
   Edit,
   Delete,
   Phone,
@@ -43,9 +36,7 @@ import {
   Close,
   Sync,
   PersonAdd,
-  MoreVert,
   Star,
-  StarBorder,
   ContentCopy,
 } from '@mui/icons-material'
 

@@ -5,6 +5,7 @@
 import * as crypto from 'crypto'
 import * as http from 'http'
 import * as dgram from 'dgram'
+import * as os from 'os'
 import { EventEmitter } from 'events'
 import Store from 'electron-store'
 import QRCode from 'qrcode'
@@ -308,7 +309,7 @@ export class SecurityManager extends EventEmitter {
       this.broadcastInterval = null
     }
     if (this.broadcastSocket) {
-      try { this.broadcastSocket.close() } catch (_) {}
+      try { this.broadcastSocket.close() } catch (_) { /* ignore close errors */ }
       this.broadcastSocket = null
     }
   }
@@ -634,7 +635,7 @@ export class SecurityManager extends EventEmitter {
       type: 'devicedoctor_pairing',
       timestamp: Date.now(),
       desktopId: this.getDesktopId(),
-      desktopName: require('os').hostname(),
+      desktopName: os.hostname(),
       ip: localIP,
       port: this.getPairingPort(),
       publicKey: this.rawEcPublicKeyToSpki(this.pairingKeyPair.publicKey).toString('base64'),

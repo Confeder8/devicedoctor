@@ -102,7 +102,7 @@ export interface ElectronAPI {
 }
 
 // Helper to create event listener cleaner
-const createEventListener = (channel: string, callback: Function) => {
+const createEventListener = (channel: string, callback: (...args: any[]) => void) => {
   const subscription = (_event: IpcRendererEvent, ...args: any[]) => callback(...args)
   ipcRenderer.on(channel, subscription)
   return () => ipcRenderer.removeListener(channel, subscription)

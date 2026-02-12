@@ -16,7 +16,6 @@ import {
   DialogContent,
   DialogActions,
   Button,
-  Tooltip,
   Snackbar,
   Alert,
   Grid,
@@ -37,10 +36,6 @@ import {
   CloudUpload,
   ViewModule,
   ViewList,
-  Storage,
-  Schedule,
-  Info,
-  GetApp,
   Android,
 } from '@mui/icons-material'
 
