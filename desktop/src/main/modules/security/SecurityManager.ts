@@ -164,15 +164,19 @@ export class SecurityManager extends EventEmitter {
   /**
    * Start temporary HTTP server to receive Android's pairing POST
    */
-  private startPairingServer(): Promise<void> {
+  private async startPairingServer(): Promise<void> {
     const port = this.getPairingPort()
 
-    return new Promise((resolve, reject) => {
-      if (this.pairingServer) {
-        this.pairingServer.close()
-        this.pairingServer = null
-      }
+    // Wait for old server to fully close before starting a new one
+    if (this.pairingServer) {
+      const oldServer = this.pairingServer
+      this.pairingServer = null
+      await new Promise<void>((resolve) => {
+        oldServer.close(() => resolve())
+      })
+    }
 
+    return new Promise((resolve, reject) => {
       this.pairingServer = http.createServer((req, res) => {
         // Set CORS headers
         res.setHeader('Access-Control-Allow-Origin', '*')

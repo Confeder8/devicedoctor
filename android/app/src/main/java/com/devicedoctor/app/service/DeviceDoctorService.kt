@@ -195,6 +195,15 @@ class DeviceDoctorService : Service() {
                             if (!desktopWantsConnected) {
                                 Log.i(TAG, "Heartbeat: Desktop requested disconnect")
                             }
+
+                            // If desktop has an active pairing session, clear local sessions
+                            // so we re-enter the pairing flow on the next loop iteration
+                            val pairingActive = resp.optBoolean("pairingActive", false)
+                            if (pairingActive) {
+                                Log.i(TAG, "Heartbeat: Desktop has active pairing, clearing local sessions to re-pair")
+                                securityManager.clearAllSessions()
+                                continue
+                            }
                         } else {
                             ConnectionManager.desktopConnected = false
                         }

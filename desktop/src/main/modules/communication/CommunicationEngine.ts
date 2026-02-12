@@ -7,8 +7,16 @@ import { SecurityManager } from '../security/SecurityManager'
 import { WiFiClient } from './clients/WiFiClient'
 import { BluetoothClient } from './clients/BluetoothClient'
 import { EventEmitter } from 'events'
+import Store from 'electron-store'
 
 export type ConnectionType = 'wifi' | 'bluetooth' | 'internet'
+export type ConnectionRoute = 'tunnel' | 'direct' | 'adb'
+
+export interface ConnectionInfo {
+  route: ConnectionRoute
+  host: string
+  port: number
+}
 
 export interface CommunicationOptions {
   deviceId: string
@@ -22,6 +30,7 @@ export class CommunicationEngine extends EventEmitter {
   private securityManager: SecurityManager
   private wifiClients: Map<string, WiFiClient> = new Map()
   private bluetoothClients: Map<string, BluetoothClient> = new Map()
+  private connectionInfoMap: Map<string, ConnectionInfo> = new Map()
 
   constructor(securityManager: SecurityManager) {
     super()
@@ -49,6 +58,62 @@ export class CommunicationEngine extends EventEmitter {
   }
 
   /**
+   * Connect with fallback: tries ADB (if localhost), then tunnel, then direct.
+   * First successful connection wins and is stored in connectionInfoMap.
+   */
+  async connectWithFallback(deviceId: string, ipAddress: string, store?: Store): Promise<ConnectionInfo> {
+    const isLocalhost = ipAddress === '127.0.0.1' || ipAddress === '::1'
+    const pairingPort = store ? (store.get('settings.pairingPort', 18443) as number) : 18443
+    const tunnelHost = store ? (store.get('settings.tunnelHost', '') as string) : ''
+    const tunnelPort = store ? (store.get('settings.tunnelPort', 0) as number) : 0
+
+    interface Attempt { route: ConnectionRoute; host: string; port: number }
+    const attempts: Attempt[] = []
+
+    // 1. ADB: only if IP is localhost
+    if (isLocalhost) {
+      attempts.push({ route: 'adb', host: '127.0.0.1', port: pairingPort })
+    }
+
+    // 2. Tunnel: if configured
+    if (tunnelHost && tunnelPort) {
+      attempts.push({ route: 'tunnel', host: tunnelHost, port: tunnelPort })
+    }
+
+    // 3. Direct WiFi
+    if (!isLocalhost) {
+      attempts.push({ route: 'direct', host: ipAddress, port: 8443 })
+    }
+
+    for (const attempt of attempts) {
+      try {
+        console.log(`Trying ${attempt.route} connection to ${attempt.host}:${attempt.port}...`)
+        await this.connect({
+          deviceId,
+          connectionType: 'wifi',
+          ipAddress: attempt.host,
+          port: attempt.port
+        })
+        const info: ConnectionInfo = { route: attempt.route, host: attempt.host, port: attempt.port }
+        this.connectionInfoMap.set(deviceId, info)
+        console.log(`Connected via ${attempt.route} to ${attempt.host}:${attempt.port}`)
+        return info
+      } catch (err: any) {
+        console.log(`${attempt.route} connection failed: ${err.message}`)
+      }
+    }
+
+    throw new Error(`All connection attempts failed for ${ipAddress}`)
+  }
+
+  /**
+   * Get connection info for a device
+   */
+  getConnectionInfo(deviceId: string): ConnectionInfo | null {
+    return this.connectionInfoMap.get(deviceId) || null
+  }
+
+  /**
    * Disconnect from a device
    */
   async disconnect(deviceId: string): Promise<void> {
@@ -64,6 +129,7 @@ export class CommunicationEngine extends EventEmitter {
       this.bluetoothClients.delete(deviceId)
     }
 
+    this.connectionInfoMap.delete(deviceId)
     this.emit('disconnected', deviceId)
   }
 

@@ -270,6 +270,19 @@ class SecurityManager(private val context: Context) {
     }
 
     /**
+     * Clear all sessions (used when desktop requests re-pairing)
+     */
+    fun clearAllSessions() {
+        val editor = preferences.edit()
+        for (key in preferences.all.keys) {
+            if (key.startsWith("session_")) {
+                editor.remove(key)
+            }
+        }
+        editor.apply()
+    }
+
+    /**
      * Store session
      */
     private fun storeSession(session: Session) {

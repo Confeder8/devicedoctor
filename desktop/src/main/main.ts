@@ -12,6 +12,7 @@ import { app, BrowserWindow, ipcMain, Menu, Tray, nativeImage } from 'electron'
 import * as path from 'path'
 import * as fs from 'fs'
 import * as http from 'http'
+import * as os from 'os'
 import { DeviceManager } from './modules/device/DeviceManager'
 import { SecurityManager } from './modules/security/SecurityManager'
 import { DiscoveryManager } from './modules/discovery/DiscoveryManager'
@@ -92,6 +93,20 @@ class DeviceDoctorApp {
 
     // Start desktop server on port 7771 for Android to discover via tunnel
     this.startDesktopServer()
+
+    // Auto-start pairing if no devices are currently paired
+    this.startAutoPairingIfNeeded()
+
+    // Restart auto-pairing when all devices are removed
+    this.deviceManager.on('device:removed', () => {
+      this.startAutoPairingIfNeeded()
+    })
+
+    // Stop auto-pairing when a device pairs successfully
+    this.securityManager.on('pairing:complete', () => {
+      console.log('Pairing complete, stopping auto-pairing broadcast')
+      this.securityManager.cancelPairing()
+    })
   }
 
   /**
@@ -130,12 +145,12 @@ class DeviceDoctorApp {
         const hasSessions = this.securityManager.getAllSessions().length > 0
         if (hasSessions) {
           res.writeHead(200)
-          res.end(JSON.stringify({ status: 'paired', desktopName: require('os').hostname() }))
+          res.end(JSON.stringify({ status: 'paired', desktopName: os.hostname() }))
           return
         }
 
         // No active pairing and no sessions — generate fresh pairing data
-        this.securityManager.generatePairingInfo(require('os').hostname()).then((pairingData) => {
+        this.securityManager.generatePairingInfo(os.hostname()).then((pairingData) => {
           res.writeHead(200)
           res.end(JSON.stringify(pairingData))
         }).catch((err: any) => {
@@ -180,7 +195,7 @@ class DeviceDoctorApp {
         res.writeHead(200)
         res.end(JSON.stringify({
           status: 'ok',
-          desktopName: require('os').hostname(),
+          desktopName: os.hostname(),
           hasSessions: sessions.length > 0,
           devices: devices.map(d => ({
             deviceId: d.deviceId,
@@ -204,25 +219,18 @@ class DeviceDoctorApp {
               const device = this.deviceManager.getDevice(deviceId)
               if (device) {
                 // Update device with latest info from Android
-                // DeviceManager.updateDevice emits 'device:updated' → IpcHandlers → renderer
+                // Do NOT override 'connected' — that is controlled by user actions (connect/disconnect buttons)
                 this.deviceManager.updateDevice(deviceId, {
                   lastSeen: Date.now(),
                   batteryLevel: data.batteryLevel,
-                  storageAvailable: data.storageAvailable,
-                  connected: true
+                  storageAvailable: data.storageAvailable
                 })
 
-                // Auto-reconnect WiFiClient if not connected (e.g., after ADB forward was re-established)
-                if (!this.communicationEngine.isConnected(deviceId) && device.ipAddress) {
-                  const port = (device.ipAddress === '127.0.0.1' || device.ipAddress === '::1') ? 18443 : 8443
-                  console.log(`Heartbeat: WiFiClient not connected, attempting reconnect to ${device.ipAddress}:${port}`)
-                  this.communicationEngine.connect({
-                    deviceId,
-                    connectionType: 'wifi',
-                    ipAddress: device.ipAddress,
-                    port
-                  }).then(() => {
-                    console.log(`WiFiClient auto-reconnected to ${device.ipAddress}:${port}`)
+                // Auto-reconnect WiFiClient if device is supposed to be connected but WiFiClient is down
+                if (device.connected && !this.communicationEngine.isConnected(deviceId) && device.ipAddress) {
+                  console.log(`Heartbeat: WiFiClient not connected, attempting reconnect for ${deviceId}`)
+                  this.communicationEngine.connectWithFallback(deviceId, device.ipAddress, this.store).then((connInfo) => {
+                    console.log(`WiFiClient auto-reconnected via ${connInfo.route} to ${connInfo.host}:${connInfo.port}`)
                   }).catch((err: any) => {
                     console.log(`WiFiClient reconnect failed: ${err.message}`)
                   })
@@ -231,11 +239,14 @@ class DeviceDoctorApp {
             }
 
             // Respond with desktop's desired connection state
-            const desiredConnected = this.deviceManager.getDevice(deviceId)?.connected ?? true
+            // Default to false if device is unknown — don't tell Android it's connected when desktop has no record
+            const desiredConnected = this.deviceManager.getDevice(deviceId)?.connected ?? false
+            const pairingActive = this.securityManager.getCurrentPairingData() !== null
             res.writeHead(200)
             res.end(JSON.stringify({
               status: 'ok',
-              connected: desiredConnected
+              connected: desiredConnected,
+              pairingActive
             }))
           } catch (err: any) {
             res.writeHead(400)
@@ -256,6 +267,22 @@ class DeviceDoctorApp {
     server.on('error', (err: any) => {
       console.error(`Desktop server error: ${err.message}`)
     })
+  }
+
+  /**
+   * Auto-start pairing if no devices are currently paired.
+   * This makes the desktop discoverable to Android without user interaction.
+   */
+  private startAutoPairingIfNeeded() {
+    const devices = this.deviceManager.getAllDevices()
+    if (devices.length === 0) {
+      console.log('No paired devices, auto-starting pairing...')
+      this.securityManager.initiatePairing('DeviceDoctor Desktop').then(() => {
+        console.log('Auto-pairing started — waiting for Android device')
+      }).catch((err: any) => {
+        console.error('Auto-pairing failed:', err.message)
+      })
+    }
   }
 
   private createMainWindow() {

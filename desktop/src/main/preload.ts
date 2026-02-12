@@ -15,10 +15,12 @@ export interface ElectronAPI {
     connect: (deviceId: string) => Promise<any>
     disconnect: (deviceId: string) => Promise<void>
     remove: (deviceId: string) => Promise<void>
+    getConnectionInfo: (deviceId: string) => Promise<{ route: string; host: string; port: number } | null>
     onDeviceFound: (callback: (device: any) => void) => () => void
     onDeviceConnected: (callback: (device: any) => void) => () => void
     onDeviceDisconnected: (callback: (deviceId: string) => void) => () => void
     onDeviceUpdated: (callback: (device: any) => void) => () => void
+    onDeviceRemoved: (callback: (deviceId: string) => void) => () => void
   }
 
   // Pairing
@@ -114,10 +116,12 @@ const electronAPI: ElectronAPI = {
     connect: (deviceId) => ipcRenderer.invoke('device:connect', deviceId),
     disconnect: (deviceId) => ipcRenderer.invoke('device:disconnect', deviceId),
     remove: (deviceId) => ipcRenderer.invoke('device:remove', deviceId),
+    getConnectionInfo: (deviceId) => ipcRenderer.invoke('device:getConnectionInfo', deviceId),
     onDeviceFound: (callback) => createEventListener('device:found', callback),
     onDeviceConnected: (callback) => createEventListener('device:connected', callback),
     onDeviceDisconnected: (callback) => createEventListener('device:disconnected', callback),
-    onDeviceUpdated: (callback) => createEventListener('device:updated', callback)
+    onDeviceUpdated: (callback) => createEventListener('device:updated', callback),
+    onDeviceRemoved: (callback) => createEventListener('device:removed', callback)
   },
 
   pairing: {

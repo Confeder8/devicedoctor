@@ -14,11 +14,13 @@ import {
   Dialog,
   DialogTitle,
   DialogContent,
+  DialogContentText,
   DialogActions,
   Stepper,
   Step,
   StepLabel,
   CircularProgress,
+  IconButton,
 } from '@mui/material'
 import {
   PhoneAndroid,
@@ -29,6 +31,9 @@ import {
   Error as ErrorIcon,
   Close,
   DevicesOther,
+  Delete,
+  Language,
+  Usb,
 } from '@mui/icons-material'
 
 const pairingSteps = ['Connecting', 'Pairing', 'Connected']
@@ -41,10 +46,16 @@ const Dashboard: React.FC = () => {
 
   // Pairing dialog state
   const [pairingOpen, setPairingOpen] = useState(false)
-  const [pairingData, setPairingData] = useState<{ qrCode: string; pin: string } | null>(null)
   const [pairingStatus, setPairingStatus] = useState<PairingStatus>('idle')
   const [pairingError, setPairingError] = useState('')
   const [activeStep, setActiveStep] = useState(0)
+
+  // Connection info state
+  const [connectionInfoMap, setConnectionInfoMap] = useState<Record<string, { route: string; host: string; port: number }>>({})
+
+  // Remove device dialog state
+  const [removeDialogOpen, setRemoveDialogOpen] = useState(false)
+  const [deviceToRemove, setDeviceToRemove] = useState<any>(null)
 
   useEffect(() => {
     loadDevices()
@@ -78,13 +89,39 @@ const Dashboard: React.FC = () => {
       })
     })
 
+    const cleanupRemoved = window.electronAPI.device.onDeviceRemoved((deviceId) => {
+      setDevices(prev => prev.filter(d => d.deviceId !== deviceId))
+    })
+
     return () => {
       cleanupFound()
       cleanupConnected()
       cleanupDisconnected()
       cleanupUpdated()
+      cleanupRemoved()
     }
   }, [])
+
+  // Fetch connection info for connected devices
+  useEffect(() => {
+    const fetchConnectionInfo = async () => {
+      const newMap: Record<string, { route: string; host: string; port: number }> = {}
+      for (const device of devices) {
+        if (device.connected) {
+          try {
+            const info = await window.electronAPI.device.getConnectionInfo(device.deviceId)
+            if (info) {
+              newMap[device.deviceId] = info
+            }
+          } catch {
+            // ignore
+          }
+        }
+      }
+      setConnectionInfoMap(newMap)
+    }
+    fetchConnectionInfo()
+  }, [devices])
 
   const loadDevices = async () => {
     try {
@@ -101,15 +138,11 @@ const Dashboard: React.FC = () => {
     setPairingOpen(true)
     setPairingStatus('generating')
     setPairingError('')
-    setPairingData(null)
     setActiveStep(0)
 
     try {
-      // Generate pairing data (QR code + PIN) and make it available via tunnel
-      const result = await window.electronAPI.pairing.start(
-        require ? 'DeviceDoctor Desktop' : 'DeviceDoctor Desktop'
-      )
-      setPairingData(result)
+      // Start pairing server and broadcast — Android will auto-discover and connect
+      await window.electronAPI.pairing.start('DeviceDoctor Desktop')
       setPairingStatus('connecting')
       setActiveStep(1)
       // Now waiting for Android to fetch pairing data via tunnel and complete pairing
@@ -118,6 +151,23 @@ const Dashboard: React.FC = () => {
       setPairingStatus('error')
       setPairingError(error.message || 'Failed to start pairing')
     }
+  }
+
+  const handleRemoveDevice = (device: any) => {
+    setDeviceToRemove(device)
+    setRemoveDialogOpen(true)
+  }
+
+  const confirmRemoveDevice = async () => {
+    if (deviceToRemove) {
+      try {
+        await window.electronAPI.device.remove(deviceToRemove.deviceId)
+      } catch (error) {
+        console.error('Failed to remove device:', error)
+      }
+    }
+    setRemoveDialogOpen(false)
+    setDeviceToRemove(null)
   }
 
   // Listen for pairing completion
@@ -138,7 +188,6 @@ const Dashboard: React.FC = () => {
     }
     setPairingOpen(false)
     setPairingStatus('idle')
-    setPairingData(null)
     setPairingError('')
     setActiveStep(0)
   }, [pairingStatus])
@@ -253,6 +302,13 @@ const Dashboard: React.FC = () => {
                       {device.manufacturer} {device.model}
                     </Typography>
                   </Box>
+                  <IconButton
+                    size="small"
+                    onClick={() => handleRemoveDevice(device)}
+                    sx={{ color: '#B2BEC3', '&:hover': { color: '#E17055' } }}
+                  >
+                    <Delete fontSize="small" />
+                  </IconButton>
                 </Box>
 
                 <Box sx={{ display: 'flex', gap: 1, mb: 2 }}>
@@ -268,24 +324,51 @@ const Dashboard: React.FC = () => {
                       border: 'none',
                     }}
                   />
-                  <Chip
-                    icon={
-                      device.connectionType === 'wifi' ? (
-                        <SignalWifi4Bar sx={{ fontSize: '14px !important' }} />
-                      ) : (
-                        <Bluetooth sx={{ fontSize: '14px !important' }} />
+                  {(() => {
+                    const connInfo = connectionInfoMap[device.deviceId]
+                    if (connInfo) {
+                      const routeConfig: Record<string, { icon: React.ReactElement; label: string }> = {
+                        tunnel: { icon: <Language sx={{ fontSize: '14px !important' }} />, label: 'Tunnel' },
+                        adb: { icon: <Usb sx={{ fontSize: '14px !important' }} />, label: 'ADB' },
+                        direct: { icon: <SignalWifi4Bar sx={{ fontSize: '14px !important' }} />, label: 'Direct' },
+                      }
+                      const cfg = routeConfig[connInfo.route] || routeConfig.direct
+                      return (
+                        <Chip
+                          icon={cfg.icon}
+                          label={cfg.label}
+                          size="small"
+                          sx={{
+                            backgroundColor: 'rgba(108,92,231,0.08)',
+                            color: '#6C5CE7',
+                            fontWeight: 500,
+                            border: 'none',
+                            '& .MuiChip-icon': { color: '#6C5CE7' },
+                          }}
+                        />
                       )
                     }
-                    label={device.connectionType?.toUpperCase()}
-                    size="small"
-                    sx={{
-                      backgroundColor: 'rgba(108,92,231,0.08)',
-                      color: '#6C5CE7',
-                      fontWeight: 500,
-                      border: 'none',
-                      '& .MuiChip-icon': { color: '#6C5CE7' },
-                    }}
-                  />
+                    return (
+                      <Chip
+                        icon={
+                          device.connectionType === 'wifi' ? (
+                            <SignalWifi4Bar sx={{ fontSize: '14px !important' }} />
+                          ) : (
+                            <Bluetooth sx={{ fontSize: '14px !important' }} />
+                          )
+                        }
+                        label={device.connectionType?.toUpperCase()}
+                        size="small"
+                        sx={{
+                          backgroundColor: 'rgba(108,92,231,0.08)',
+                          color: '#6C5CE7',
+                          fontWeight: 500,
+                          border: 'none',
+                          '& .MuiChip-icon': { color: '#6C5CE7' },
+                        }}
+                      />
+                    )
+                  })()}
                 </Box>
 
                 {/* Info section with subtle background */}
@@ -300,6 +383,11 @@ const Dashboard: React.FC = () => {
                   <Typography variant="body2" sx={{ color: '#636E72', fontSize: '0.8rem' }}>
                     Android {device.androidVersion}
                   </Typography>
+                  {connectionInfoMap[device.deviceId] && (
+                    <Typography variant="body2" sx={{ color: '#636E72', fontSize: '0.8rem' }}>
+                      {connectionInfoMap[device.deviceId].host}:{connectionInfoMap[device.deviceId].port} ({connectionInfoMap[device.deviceId].route})
+                    </Typography>
+                  )}
                   <Typography variant="body2" sx={{ color: '#636E72', fontSize: '0.8rem' }}>
                     Last seen: {new Date(device.lastSeen).toLocaleString()}
                   </Typography>
@@ -366,29 +454,11 @@ const Dashboard: React.FC = () => {
 
           {pairingStatus === 'connecting' && (
             <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 4 }}>
-              {pairingData?.qrCode && (
-                <Box sx={{ mb: 2 }}>
-                  <img src={pairingData.qrCode} alt="Pairing QR Code" style={{ width: 200, height: 200 }} />
-                </Box>
-              )}
-              {pairingData?.pin && (
-                <Box sx={{
-                  backgroundColor: '#F8F9FC',
-                  borderRadius: '12px',
-                  px: 4, py: 2, mb: 2,
-                  textAlign: 'center'
-                }}>
-                  <Typography variant="body2" color="text.secondary">PIN Code</Typography>
-                  <Typography variant="h4" sx={{ fontWeight: 700, letterSpacing: 6, color: '#6C5CE7' }}>
-                    {pairingData.pin}
-                  </Typography>
-                </Box>
-              )}
-              <CircularProgress size={24} sx={{ color: '#6C5CE7', mb: 1 }} />
+              <CircularProgress size={48} sx={{ color: '#6C5CE7', mb: 2 }} />
               <Typography sx={{ fontWeight: 500 }}>Waiting for Android device...</Typography>
               <Typography variant="body2" color="text.secondary" sx={{ mt: 1, textAlign: 'center' }}>
-                Open DeviceDoctor on your Android device. It will connect automatically
-                via the tunnel, or scan the QR code if on the same network.
+                Open DeviceDoctor on your Android device and tap "Pair with Desktop".
+                It will connect automatically.
               </Typography>
             </Box>
           )}
@@ -450,6 +520,28 @@ const Dashboard: React.FC = () => {
               Cancel
             </Button>
           )}
+        </DialogActions>
+      </Dialog>
+
+      {/* Remove Device Confirmation Dialog */}
+      <Dialog
+        open={removeDialogOpen}
+        onClose={() => setRemoveDialogOpen(false)}
+      >
+        <DialogTitle>Remove Device</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            Remove {deviceToRemove?.deviceName || 'this device'}? This will unpair
+            the device and revoke its session.
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setRemoveDialogOpen(false)} color="inherit">
+            Cancel
+          </Button>
+          <Button onClick={confirmRemoveDevice} color="error" variant="contained">
+            Remove
+          </Button>
         </DialogActions>
       </Dialog>
     </Box>

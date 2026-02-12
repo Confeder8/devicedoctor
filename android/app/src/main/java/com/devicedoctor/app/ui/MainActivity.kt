@@ -198,15 +198,6 @@ fun MainScreen(
         )
         Screen.DISCOVER_DESKTOPS -> DiscoverDesktopsScreen(
             securityManager = securityManager,
-            onDesktopSelected = { data ->
-                pairingData = data
-                currentScreen = Screen.PIN_CONFIRMATION
-            },
-            onBack = { currentScreen = Screen.HOME }
-        )
-        Screen.PIN_CONFIRMATION -> PinConfirmationScreen(
-            pairingData = pairingData!!,
-            securityManager = securityManager,
             onPairingResult = { success, error ->
                 pairingSuccess = success
                 pairingErrorMsg = error
@@ -214,6 +205,10 @@ fun MainScreen(
             },
             onBack = { currentScreen = Screen.HOME }
         )
+        Screen.PIN_CONFIRMATION -> {
+            // PIN confirmation is no longer used — redirect to home
+            currentScreen = Screen.HOME
+        }
         Screen.PAIRING_RESULT -> PairingResultScreen(
             success = pairingSuccess,
             errorMessage = pairingErrorMsg,
@@ -446,7 +441,7 @@ data class DiscoveredDesktop(
 @Composable
 fun DiscoverDesktopsScreen(
     securityManager: SecurityManager,
-    onDesktopSelected: (SecurityManager.PairingData) -> Unit,
+    onPairingResult: (success: Boolean, error: String) -> Unit,
     onBack: () -> Unit
 ) {
     val discoveredDesktops = remember { mutableStateListOf<DiscoveredDesktop>() }
@@ -520,6 +515,7 @@ fun DiscoverDesktopsScreen(
         errorMessage = null
         scope.launch {
             try {
+                // Fetch pairing data from desktop
                 val pairingData = withContext(Dispatchers.IO) {
                     val url = URL("http://$ip:$port/api/v1/pairing/info")
                     val conn = url.openConnection() as HttpURLConnection
@@ -535,7 +531,46 @@ fun DiscoverDesktopsScreen(
                     val body = conn.inputStream.bufferedReader().readText()
                     securityManager.processPairingQR(body)
                 }
-                onDesktopSelected(pairingData)
+
+                // Auto-complete pairing without PIN confirmation
+                val result = withContext(Dispatchers.IO) {
+                    securityManager.completePairing(pairingData)
+                }
+
+                // POST completion to desktop
+                withContext(Dispatchers.IO) {
+                    val url = URL("http://${pairingData.ip}:${pairingData.port}/api/v1/pairing/complete")
+                    val conn = url.openConnection() as HttpURLConnection
+                    conn.requestMethod = "POST"
+                    conn.setRequestProperty("Content-Type", "application/json")
+                    conn.doOutput = true
+                    conn.connectTimeout = 10000
+                    conn.readTimeout = 10000
+
+                    val body = """
+                        {
+                            "androidPublicKey": "${result.androidPublicKey}",
+                            "deviceId": "${result.session.deviceId}",
+                            "challenge": "${result.challenge}",
+                            "deviceName": "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}",
+                            "manufacturer": "${android.os.Build.MANUFACTURER}",
+                            "model": "${android.os.Build.MODEL}",
+                            "androidVersion": "${android.os.Build.VERSION.RELEASE}",
+                            "androidPort": ${ConnectionManager.HTTP_PORT}
+                        }
+                    """.trimIndent()
+
+                    conn.outputStream.use { os ->
+                        os.write(body.toByteArray())
+                    }
+
+                    val responseCode = conn.responseCode
+                    if (responseCode != 200) {
+                        throw Exception("Desktop responded with status $responseCode")
+                    }
+                }
+
+                onPairingResult(true, "")
             } catch (e: Exception) {
                 errorMessage = e.message ?: "Failed to connect"
                 isConnecting = false
@@ -579,7 +614,7 @@ fun DiscoverDesktopsScreen(
             )
 
             Text(
-                text = "Make sure you clicked \"Add Device\" in the desktop app first.",
+                text = "Make sure the DeviceDoctor desktop app is running.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,

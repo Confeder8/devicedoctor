@@ -11,6 +11,7 @@ import { SmsService } from '../services/SmsService'
 import { ContactService } from '../services/ContactService'
 import { AppService } from '../services/AppService'
 import { FileService } from '../services/FileService'
+import * as http from 'http'
 import Store from 'electron-store'
 
 export function registerIpcHandlers(
@@ -37,6 +38,7 @@ export function registerIpcHandlers(
   deviceManager.on('device:connected', (device) => forwardEvent('device:connected', device))
   deviceManager.on('device:disconnected', (deviceId) => forwardEvent('device:disconnected', deviceId))
   deviceManager.on('device:updated', (device) => forwardEvent('device:updated', device))
+  deviceManager.on('device:removed', (deviceId) => forwardEvent('device:removed', deviceId))
   deviceManager.on('message', ({ deviceId, message }) => {
     // Forward specific message types
     forwardEvent(`${message.type}`, { deviceId, ...message.data })
@@ -44,15 +46,10 @@ export function registerIpcHandlers(
 
   // SecurityManager pairing:complete event — register device and forward to renderer
   securityManager.on('pairing:complete', async (data) => {
-    let androidPort = data.androidPort || 8443
     const ipAddress = data.ipAddress || '127.0.0.1'
 
-    // When connecting from emulator (127.0.0.1), use ADB-forwarded port
-    // adb forward tcp:18443 tcp:8443 maps localhost:18443 → emulator:8443
-    if (ipAddress === '127.0.0.1' || ipAddress === '::1') {
-      androidPort = 18443
-      console.log('Emulator detected, using ADB-forwarded port 18443')
-    }
+    // Stop pairing server FIRST to release port (e.g. 18443) before ADB connection attempt
+    securityManager.cancelPairing()
 
     // Register device in DeviceManager
     const device = {
@@ -71,18 +68,15 @@ export function registerIpcHandlers(
     }
     deviceManager.addDevice(device)
 
-    // Create WiFiClient so CommunicationEngine can send requests to Android
+    // Small delay to let OS release the port after pairing server stops
+    await new Promise(resolve => setTimeout(resolve, 500))
+
+    // Connect with fallback: ADB → tunnel → direct
     try {
-      await communicationEngine.connect({
-        deviceId: data.deviceId,
-        connectionType: 'wifi',
-        ipAddress: ipAddress,
-        port: androidPort
-      })
-      console.log(`WiFiClient connected to ${ipAddress}:${androidPort} for device ${data.deviceId}`)
+      const connInfo = await communicationEngine.connectWithFallback(data.deviceId, ipAddress, store)
+      console.log(`WiFiClient connected via ${connInfo.route} to ${connInfo.host}:${connInfo.port} for device ${data.deviceId}`)
     } catch (err) {
       console.error('Failed to create WiFiClient after pairing:', err)
-      // Device is still registered, but services won't work until connected
     }
 
     forwardEvent('pairing:complete', data)
@@ -101,34 +95,51 @@ export function registerIpcHandlers(
   ipcMain.handle('device:connect', async (_event, deviceId: string) => {
     await deviceManager.connect(deviceId)
 
-    // Also create WiFiClient if not already connected
-    if (!communicationEngine.isConnected(deviceId)) {
-      const device = deviceManager.getDevice(deviceId)
-      if (device && device.ipAddress) {
-        // Use ADB-forwarded port for emulator connections
-        const port = (device.ipAddress === '127.0.0.1' || device.ipAddress === '::1') ? 18443 : 8443
-        try {
-          await communicationEngine.connect({
-            deviceId,
-            connectionType: 'wifi',
-            ipAddress: device.ipAddress,
-            port
-          })
-        } catch (err) {
-          console.error('Failed to create WiFiClient on connect:', err)
-        }
+    // Connect with fallback if not already connected
+    const device = deviceManager.getDevice(deviceId)
+    if (!communicationEngine.isConnected(deviceId) && device && device.ipAddress) {
+      try {
+        await communicationEngine.connectWithFallback(deviceId, device.ipAddress, store)
+      } catch (err) {
+        console.error('Failed to create WiFiClient on connect:', err)
       }
+    }
+
+    // Notify Android that desktop wants to connect
+    const connInfo = communicationEngine.getConnectionInfo(deviceId)
+    if (connInfo) {
+      notifyAndroid(connInfo.host, connInfo.port, '/api/v1/connection/connect', { deviceId })
     }
 
     return { success: true }
   })
 
   ipcMain.handle('device:disconnect', async (_event, deviceId: string) => {
+    // Notify Android before tearing down (grab connInfo before disconnect clears it)
+    const connInfo = communicationEngine.getConnectionInfo(deviceId)
+    if (connInfo) {
+      await notifyAndroid(connInfo.host, connInfo.port, '/api/v1/connection/disconnect', { deviceId })
+    }
+
+    // Tear down WiFiClient
+    if (communicationEngine.isConnected(deviceId)) {
+      try {
+        await communicationEngine.disconnect(deviceId)
+      } catch (err) {
+        console.error('Failed to disconnect WiFiClient:', err)
+      }
+    }
+
+    // Update local state
     await deviceManager.disconnect(deviceId)
   })
 
   ipcMain.handle('device:remove', async (_event, deviceId: string) => {
     await deviceManager.removeDevice(deviceId)
+  })
+
+  ipcMain.handle('device:getConnectionInfo', async (_event, deviceId: string) => {
+    return communicationEngine.getConnectionInfo(deviceId)
   })
 
   // ===== Pairing =====
@@ -288,5 +299,40 @@ export function registerIpcHandlers(
 
   ipcMain.handle('system:requestPermission', async (_event, deviceId: string, permissions: string[]) => {
     return await deviceManager.requestPermission(deviceId, permissions)
+  })
+}
+
+/**
+ * Send a fire-and-forget HTTP POST to Android's Ktor server.
+ * Used to notify Android of connect/disconnect events immediately.
+ */
+function notifyAndroid(ipAddress: string, port: number, path: string, body: Record<string, any>): Promise<void> {
+  return new Promise((resolve) => {
+    const postData = JSON.stringify(body)
+    const req = http.request({
+      hostname: ipAddress,
+      port,
+      path,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(postData)
+      },
+      timeout: 3000
+    }, (res) => {
+      // Drain the response
+      res.resume()
+      res.on('end', () => resolve())
+    })
+    req.on('error', (err) => {
+      console.log(`notifyAndroid ${path} failed (non-fatal): ${err.message}`)
+      resolve() // Non-fatal — Android will pick up the state change via heartbeat
+    })
+    req.on('timeout', () => {
+      req.destroy()
+      resolve()
+    })
+    req.write(postData)
+    req.end()
   })
 }
