@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(\"C:\\Users\\Confe\\AppData\\Local\\Android\\Sdk\\platform-tools\\adb.exe\" logcat *)"
+    ]
+  }
+}
