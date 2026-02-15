@@ -51,7 +51,7 @@ export function registerIpcHandlers(
     // Stop pairing server FIRST to release port (e.g. 18443) before ADB connection attempt
     securityManager.cancelPairing()
 
-    // Register device in DeviceManager
+    // Register device in DeviceManager (not connected until WiFi link is up)
     const device = {
       deviceId: data.deviceId,
       deviceName: data.deviceName || 'Android Device',
@@ -60,7 +60,7 @@ export function registerIpcHandlers(
       androidVersion: data.androidVersion || 'Unknown',
       ipAddress: ipAddress,
       connectionType: 'wifi' as const,
-      connected: true,
+      connected: false,
       paired: true,
       lastSeen: Date.now(),
       pairedAt: Date.now(),
@@ -75,6 +75,7 @@ export function registerIpcHandlers(
     try {
       const connInfo = await communicationEngine.connectWithFallback(data.deviceId, ipAddress, store)
       console.log(`WiFiClient connected via ${connInfo.route} to ${connInfo.host}:${connInfo.port} for device ${data.deviceId}`)
+      deviceManager.updateDevice(data.deviceId, { connected: true })
     } catch (err) {
       console.error('Failed to create WiFiClient after pairing:', err)
     }

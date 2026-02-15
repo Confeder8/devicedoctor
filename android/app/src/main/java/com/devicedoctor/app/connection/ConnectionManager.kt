@@ -105,18 +105,14 @@ class ConnectionManager(
                         post("/pairing/initiate") {
                             val request = call.receive<Map<String, Any>>()
                             val response = apiRouter.handlePairingInitiate(request)
-                            // Only mark connected if pairing succeeded
-                            val status = response["status"] as? String
-                            if (status == "success") {
-                                desktopConnected = true
-                            }
+                            // Pairing establishes crypto keys but does NOT mean "connected".
+                            // The desktop heartbeat response is the authoritative connection state.
                             call.respond(response)
                         }
 
                         post("/pairing/complete") {
                             val request = call.receive<Map<String, Any>>()
                             val response = apiRouter.handlePairingComplete(request)
-                            desktopConnected = true
                             call.respond(response)
                         }
 

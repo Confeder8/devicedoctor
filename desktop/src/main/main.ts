@@ -40,6 +40,7 @@ class DeviceDoctorApp {
   private securityManager: SecurityManager
   private discoveryManager: DiscoveryManager
   private communicationEngine: CommunicationEngine
+  private reconnectAttempts: Map<string, { count: number; nextAttemptAfter: number }> = new Map()
 
   constructor() {
     this.store = new Store({
@@ -228,12 +229,34 @@ class DeviceDoctorApp {
 
                 // Auto-reconnect WiFiClient if device is supposed to be connected but WiFiClient is down
                 if (device.connected && !this.communicationEngine.isConnected(deviceId) && device.ipAddress) {
-                  console.log(`Heartbeat: WiFiClient not connected, attempting reconnect for ${deviceId}`)
-                  this.communicationEngine.connectWithFallback(deviceId, device.ipAddress, this.store).then((connInfo) => {
-                    console.log(`WiFiClient auto-reconnected via ${connInfo.route} to ${connInfo.host}:${connInfo.port}`)
-                  }).catch((err: any) => {
-                    console.log(`WiFiClient reconnect failed: ${err.message}`)
-                  })
+                  const MAX_RECONNECT_ATTEMPTS = 5
+                  const state = this.reconnectAttempts.get(deviceId) || { count: 0, nextAttemptAfter: 0 }
+
+                  if (Date.now() < state.nextAttemptAfter) {
+                    // Still in backoff period, skip this heartbeat
+                  } else if (state.count >= MAX_RECONNECT_ATTEMPTS) {
+                    // Give up — mark device as disconnected
+                    console.log(`Heartbeat: max reconnect attempts (${MAX_RECONNECT_ATTEMPTS}) reached for ${deviceId}, marking disconnected`)
+                    this.deviceManager.disconnect(deviceId)
+                    this.reconnectAttempts.delete(deviceId)
+                    if (this.mainWindow) {
+                      this.mainWindow.webContents.send('device:disconnected', deviceId)
+                    }
+                  } else {
+                    const attempt = state.count + 1
+                    const backoffMs = Math.min(2000 * Math.pow(2, state.count), 60000)
+                    this.reconnectAttempts.set(deviceId, { count: attempt, nextAttemptAfter: Date.now() + backoffMs })
+                    console.log(`Heartbeat: reconnect attempt ${attempt}/${MAX_RECONNECT_ATTEMPTS} for ${deviceId} (next backoff: ${backoffMs}ms)`)
+                    this.communicationEngine.connectWithFallback(deviceId, device.ipAddress, this.store).then((connInfo) => {
+                      console.log(`WiFiClient auto-reconnected via ${connInfo.route} to ${connInfo.host}:${connInfo.port}`)
+                      this.reconnectAttempts.delete(deviceId)
+                    }).catch((err: any) => {
+                      console.log(`WiFiClient reconnect failed: ${err.message}`)
+                    })
+                  }
+                } else if (this.communicationEngine.isConnected(deviceId)) {
+                  // Connection is healthy — reset reconnect state
+                  this.reconnectAttempts.delete(deviceId)
                 }
               }
             }

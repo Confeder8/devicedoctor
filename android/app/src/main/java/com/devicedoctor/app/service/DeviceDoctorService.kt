@@ -42,6 +42,9 @@ class DeviceDoctorService : Service() {
         )
         wakeLock.acquire(10*60*1000L /*10 minutes*/)
 
+        // Reset connection state — desktop must confirm via heartbeat
+        ConnectionManager.desktopConnected = false
+
         // Initialize managers
         securityManager = SecurityManager(this)
         connectionManager = ConnectionManager(this, securityManager)
@@ -86,6 +89,9 @@ class DeviceDoctorService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+
+        // Mark disconnected immediately
+        ConnectionManager.desktopConnected = false
 
         // Stop connection services
         serviceScope.launch {
@@ -190,7 +196,7 @@ class DeviceDoctorService : Service() {
                         if (code == 200) {
                             val respBody = conn.inputStream.bufferedReader().readText()
                             val resp = JSONObject(respBody)
-                            val desktopWantsConnected = resp.optBoolean("connected", true)
+                            val desktopWantsConnected = resp.optBoolean("connected", false)
                             ConnectionManager.desktopConnected = desktopWantsConnected
                             if (!desktopWantsConnected) {
                                 Log.i(TAG, "Heartbeat: Desktop requested disconnect")
@@ -271,9 +277,10 @@ class DeviceDoctorService : Service() {
 
                         if (completeCode == 200) {
                             Log.i(TAG, "Auto-pair: Pairing successful!")
-                            ConnectionManager.desktopConnected = true
+                            // Don't set desktopConnected here — the next heartbeat
+                            // response from desktop is the authoritative connection state
                             withContext(Dispatchers.Main) {
-                                updateNotification("Connected to ${pairingData.desktopName}")
+                                updateNotification("Paired with ${pairingData.desktopName}")
                             }
                         } else {
                             Log.w(TAG, "Auto-pair: Desktop rejected pairing ($completeCode)")

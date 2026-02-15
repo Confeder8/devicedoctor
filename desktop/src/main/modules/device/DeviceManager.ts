@@ -24,6 +24,7 @@ export interface Device {
   capabilities: string[]
   batteryLevel?: number
   storageAvailable?: number
+  androidPort?: number
 }
 
 export class DeviceManager extends EventEmitter {
