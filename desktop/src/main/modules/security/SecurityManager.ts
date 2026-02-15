@@ -208,7 +208,8 @@ export class SecurityManager extends EventEmitter {
           req.on('data', (chunk: Buffer) => { body += chunk.toString() })
           req.on('end', async () => {
             try {
-              const { androidPublicKey, deviceId, challenge } = JSON.parse(body)
+              const parsed = JSON.parse(body)
+              const { androidPublicKey, deviceId, challenge } = parsed
               const result = await this.completePairing(androidPublicKey, deviceId, challenge)
 
               res.writeHead(200)
@@ -218,11 +219,17 @@ export class SecurityManager extends EventEmitter {
                 challengeResponse: result.challengeResponse
               }))
 
-              // Emit event for IPC forwarding
+              // Emit event for IPC forwarding — include all fields from Android POST
               this.emit('pairing:complete', {
                 sessionId: result.session.sessionId,
                 deviceId: result.session.deviceId,
-                desktopId: result.session.desktopId
+                desktopId: result.session.desktopId,
+                ipAddress: result.session.ipAddress,
+                deviceName: parsed.deviceName,
+                manufacturer: parsed.manufacturer,
+                model: parsed.model,
+                androidVersion: parsed.androidVersion,
+                androidPort: parsed.androidPort
               })
 
               // Close server after successful pairing
