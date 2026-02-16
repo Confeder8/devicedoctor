@@ -60,7 +60,11 @@ export class CommunicationEngine extends EventEmitter {
   }
 
   /**
-   * Connect with fallback: tries ADB forward (if localhost/emulator), then tunnel, then direct.
+   * Connect with fallback. Attempt order:
+   *   1. Tunnel  (internet relay — works across all networks incl. cellular)
+   *   2. Direct WiFi (fast on LAN)
+   *   3. Bluetooth (if bluetooth-serial-port available)
+   *   4. ADB forward (emulator/USB fallback)
    * First successful connection wins and is stored in connectionInfoMap.
    */
   async connectWithFallback(deviceId: string, ipAddress: string, store?: Store, androidPort: number = 8443): Promise<ConnectionInfo> {
@@ -68,32 +72,42 @@ export class CommunicationEngine extends EventEmitter {
     const tunnelHost = store ? (store.get('settings.tunnelHost', '') as string) : ''
     const tunnelPort = store ? (store.get('settings.tunnelPort', 0) as number) : 0
 
-    interface Attempt { route: ConnectionRoute; host: string; port: number }
+    interface Attempt { route: ConnectionRoute; host: string; port: number; type: ConnectionType }
     const attempts: Attempt[] = []
 
-    // 1. ADB forward: only if IP is localhost (emulator scenario)
-    //    Sets up adb forward from a local port to the emulator's Android HTTP port
-    if (isLocalhost) {
-      try {
-        const localPort = this.setupAdbForward(deviceId, androidPort)
-        attempts.push({ route: 'adb', host: '127.0.0.1', port: localPort })
-      } catch (err: any) {
-        console.log(`adb forward setup failed: ${err.message}`)
-      }
-    }
-
-    // 2. Tunnel: if configured
+    // 1. Tunnel: highest priority — works across all networks
     if (tunnelHost && tunnelPort) {
-      attempts.push({ route: 'tunnel', host: tunnelHost, port: tunnelPort })
+      attempts.push({ route: 'tunnel', host: tunnelHost, port: tunnelPort, type: 'wifi' })
     }
 
-    // 3. Direct WiFi
+    // 2. Direct WiFi: fast on LAN (skip for localhost — that's the emulator)
     if (!isLocalhost) {
-      attempts.push({ route: 'direct', host: ipAddress, port: androidPort })
+      attempts.push({ route: 'direct', host: ipAddress, port: androidPort, type: 'wifi' })
+    }
+
+    // 3. Bluetooth: try if module is available
+    attempts.push({ route: 'direct', host: '', port: 0, type: 'bluetooth' })
+
+    // 4. ADB forward: emulator/USB fallback
+    try {
+      const localPort = this.setupAdbForward(deviceId, androidPort)
+      attempts.push({ route: 'adb', host: '127.0.0.1', port: localPort, type: 'wifi' })
+    } catch (err: any) {
+      console.log(`adb forward setup skipped: ${err.message}`)
     }
 
     for (const attempt of attempts) {
       try {
+        if (attempt.type === 'bluetooth') {
+          // Try Bluetooth — skip silently if module unavailable or no address
+          console.log('Trying bluetooth connection...')
+          await this.connect({ deviceId, connectionType: 'bluetooth', bluetoothAddress: '' })
+          const info: ConnectionInfo = { route: 'direct', host: 'bluetooth', port: 0 }
+          this.connectionInfoMap.set(deviceId, info)
+          console.log('Connected via bluetooth')
+          return info
+        }
+
         console.log(`Trying ${attempt.route} connection to ${attempt.host}:${attempt.port}...`)
         await this.connect({
           deviceId,
@@ -106,7 +120,7 @@ export class CommunicationEngine extends EventEmitter {
         console.log(`Connected via ${attempt.route} to ${attempt.host}:${attempt.port}`)
         return info
       } catch (err: any) {
-        console.log(`${attempt.route} connection failed: ${err.message}`)
+        console.log(`${attempt.type === 'bluetooth' ? 'bluetooth' : attempt.route} connection failed: ${err.message}`)
       }
     }
 

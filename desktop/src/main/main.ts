@@ -41,6 +41,7 @@ class DeviceDoctorApp {
   private discoveryManager: DiscoveryManager
   private communicationEngine: CommunicationEngine
   private reconnectAttempts: Map<string, { count: number; nextAttemptAfter: number }> = new Map()
+  private _quitting = false
 
   constructor() {
     this.store = new Store({
@@ -89,11 +90,39 @@ class DeviceDoctorApp {
       }
     })
 
+    // Notify Android devices before quitting so they show "disconnected" immediately
+    app.on('before-quit', async (event) => {
+      if (this._quitting) return
+      this._quitting = true
+      event.preventDefault()
+
+      const devices = this.deviceManager.getAllDevices().filter(d => d.connected)
+      const disconnectPromises = devices.map(async (device) => {
+        // Notify Android via fire-and-forget HTTP POST
+        const connInfo = this.communicationEngine.getConnectionInfo(device.deviceId)
+        if (connInfo) {
+          await this.notifyAndroidDisconnect(connInfo.host, connInfo.port, device.deviceId)
+        }
+        // Mark disconnected locally
+        this.deviceManager.updateDevice(device.deviceId, { connected: false })
+        // Tear down WiFiClient and ADB forwards
+        try {
+          await this.communicationEngine.disconnect(device.deviceId)
+        } catch (_) { /* ignore cleanup errors */ }
+      })
+
+      await Promise.allSettled(disconnectPromises)
+      app.quit()
+    })
+
     // Initialize device discovery
     await this.discoveryManager.startDiscovery()
 
     // Start desktop server on port 7771 for Android to discover via tunnel
     this.startDesktopServer()
+
+    // Reconnect previously paired devices
+    this.reconnectPairedDevices()
 
     // Auto-start pairing if no devices are currently paired
     this.startAutoPairingIfNeeded()
@@ -107,6 +136,33 @@ class DeviceDoctorApp {
     this.securityManager.on('pairing:complete', () => {
       console.log('Pairing complete, stopping auto-pairing broadcast')
       this.securityManager.cancelPairing()
+    })
+  }
+
+  /**
+   * Send a fire-and-forget disconnect notification to Android.
+   */
+  private notifyAndroidDisconnect(host: string, port: number, deviceId: string): Promise<void> {
+    return new Promise((resolve) => {
+      const postData = JSON.stringify({ deviceId })
+      const req = http.request({
+        hostname: host,
+        port,
+        path: '/api/v1/connection/disconnect',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(postData)
+        },
+        timeout: 2000
+      }, (res) => {
+        res.resume()
+        res.on('end', () => resolve())
+      })
+      req.on('error', () => resolve())
+      req.on('timeout', () => { req.destroy(); resolve() })
+      req.write(postData)
+      req.end()
     })
   }
 
@@ -327,6 +383,40 @@ class DeviceDoctorApp {
         console.error('Auto-pairing failed:', err.message)
       })
     }
+  }
+
+  /**
+   * Attempt to reconnect all previously paired devices on startup.
+   * Runs in parallel — failures are logged and left for heartbeat retry.
+   */
+  private reconnectPairedDevices() {
+    const paired = this.deviceManager.getAllDevices().filter(d => d.paired && d.ipAddress)
+    if (paired.length === 0) return
+
+    console.log(`Reconnecting ${paired.length} paired device(s)...`)
+    const promises = paired.map(async (device) => {
+      const session = this.securityManager.getSession(device.deviceId)
+      if (!session) {
+        console.log(`Skipping reconnect for ${device.deviceId}: no active session`)
+        return
+      }
+      try {
+        const connInfo = await this.communicationEngine.connectWithFallback(
+          device.deviceId, device.ipAddress, this.store, device.androidPort || 8443
+        )
+        console.log(`Reconnected ${device.deviceId} via ${connInfo.route} to ${connInfo.host}:${connInfo.port}`)
+        this.deviceManager.updateDevice(device.deviceId, { connected: true })
+        if (this.mainWindow) {
+          this.mainWindow.webContents.send('device:connected', this.deviceManager.getDevice(device.deviceId))
+        }
+      } catch (err: any) {
+        console.log(`Reconnect failed for ${device.deviceId}: ${err.message}`)
+      }
+    })
+
+    Promise.allSettled(promises).then(() => {
+      console.log('Reconnect sweep complete')
+    })
   }
 
   private createMainWindow() {

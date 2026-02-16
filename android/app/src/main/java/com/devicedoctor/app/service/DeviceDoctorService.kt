@@ -139,10 +139,72 @@ class DeviceDoctorService : Service() {
     }
 
     /**
-     * Auto-connect to desktop via tunnel.
-     * The tunnel at DESKTOP_TUNNEL_HOST:DESKTOP_TUNNEL_PORT routes to the
-     * desktop's HTTP server (port 7771). Android is the client — it polls
-     * the desktop for pairing info, then sends heartbeats after pairing.
+     * Resolve the desktop address to use for heartbeats / pairing.
+     * Priority:
+     *   1. Session's desktopIp + DESKTOP_PORT (stored during pairing)
+     *   2. Tunnel host + tunnel port (configured or hardcoded fallback)
+     *   3. Emulator loopback 10.0.2.2 + DESKTOP_PORT (emulator-only)
+     * Returns list of (host, port) pairs to try in order.
+     */
+    private fun getDesktopEndpoints(session: com.devicedoctor.app.security.SecurityManager.Session? = null): List<Pair<String, Int>> {
+        val endpoints = mutableListOf<Pair<String, Int>>()
+
+        // 1. Session's stored desktop IP (from pairing QR data)
+        val desktopIp = session?.desktopIp
+        if (!desktopIp.isNullOrBlank() && desktopIp != "0.0.0.0") {
+            endpoints.add(desktopIp to DESKTOP_PORT)
+        }
+
+        // 2. Tunnel relay
+        if (DESKTOP_TUNNEL_HOST.isNotBlank()) {
+            endpoints.add(DESKTOP_TUNNEL_HOST to DESKTOP_TUNNEL_PORT)
+        }
+
+        // 3. Emulator loopback fallback
+        endpoints.add(EMULATOR_HOST to DESKTOP_PORT)
+
+        return endpoints.distinct()
+    }
+
+    /**
+     * Try an HTTP request against multiple desktop endpoints.
+     * Returns the (connection, host, port) for the first successful one, or null.
+     */
+    private fun tryEndpoints(
+        endpoints: List<Pair<String, Int>>,
+        path: String,
+        method: String = "GET",
+        body: String? = null,
+        connectTimeout: Int = 5000,
+        readTimeout: Int = 5000
+    ): Triple<HttpURLConnection, String, Int>? {
+        for ((host, port) in endpoints) {
+            try {
+                val url = URL("http://$host:$port$path")
+                val conn = url.openConnection() as HttpURLConnection
+                conn.requestMethod = method
+                conn.connectTimeout = connectTimeout
+                conn.readTimeout = readTimeout
+                if (body != null) {
+                    conn.setRequestProperty("Content-Type", "application/json")
+                    conn.doOutput = true
+                    conn.outputStream.use { it.write(body.toByteArray()) }
+                }
+                // Trigger the connection — if this throws, try next endpoint
+                val code = conn.responseCode
+                Log.i(TAG, "tryEndpoints: $method $path -> $host:$port => $code")
+                return Triple(conn, host, port)
+            } catch (e: Exception) {
+                Log.w(TAG, "tryEndpoints: $host:$port$path failed: ${e.message}")
+            }
+        }
+        return null
+    }
+
+    /**
+     * Auto-connect to desktop via tunnel or direct IP.
+     * Android is the client — it polls the desktop for pairing info, then
+     * sends heartbeats after pairing.
      *
      * Flow:
      * 1. If no sessions: poll /api/v1/pairing/info, auto-pair when desktop is ready
@@ -157,61 +219,47 @@ class DeviceDoctorService : Service() {
             delay(5000)
             Log.i(TAG, "autoConnectViaTunnel: delay done, entering loop. isActive=$isActive")
 
-            // DNS check — resolve tunnel hostname once to diagnose connectivity
-            try {
-                Log.i(TAG, "DNS check: resolving $DESKTOP_TUNNEL_HOST ...")
-                val addr = InetAddress.getByName(DESKTOP_TUNNEL_HOST)
-                Log.i(TAG, "DNS check: $DESKTOP_TUNNEL_HOST -> ${addr.hostAddress}")
-            } catch (e: Exception) {
-                Log.e(TAG, "DNS check FAILED: ${e.javaClass.simpleName}: ${e.message}")
-            }
-
             while (isActive) {
                 val sessions = securityManager.getAllSessions()
                 Log.i(TAG, "Loop: sessions=${sessions.size}")
 
                 // Phase 1: Already paired — send heartbeats
                 if (sessions.isNotEmpty()) {
+                    val session = sessions.first()
+                    val endpoints = getDesktopEndpoints(session)
                     try {
-                        Log.i(TAG, "Heartbeat: sending to $DESKTOP_TUNNEL_HOST:$DESKTOP_TUNNEL_PORT")
-                        val heartbeatUrl = URL("http://$DESKTOP_TUNNEL_HOST:$DESKTOP_TUNNEL_PORT/api/v1/heartbeat")
-                        val conn = heartbeatUrl.openConnection() as HttpURLConnection
-                        conn.requestMethod = "POST"
-                        conn.setRequestProperty("Content-Type", "application/json")
-                        conn.doOutput = true
-                        conn.connectTimeout = 5000
-                        conn.readTimeout = 5000
-
-                        val session = sessions.firstOrNull()
                         val postBody = JSONObject().apply {
-                            put("deviceId", session?.deviceId ?: "")
+                            put("deviceId", session.deviceId)
                             put("deviceName", android.os.Build.MODEL)
                             put("androidVersion", android.os.Build.VERSION.RELEASE)
                         }.toString()
 
-                        conn.outputStream.use { it.write(postBody.toByteArray()) }
+                        val result = tryEndpoints(endpoints, "/api/v1/heartbeat", "POST", postBody)
+                        if (result != null) {
+                            val (conn, host, port) = result
+                            val code = conn.responseCode
+                            Log.i(TAG, "Heartbeat: response=$code from $host:$port")
+                            if (code == 200) {
+                                val respBody = conn.inputStream.bufferedReader().readText()
+                                val resp = JSONObject(respBody)
+                                val desktopWantsConnected = resp.optBoolean("connected", false)
+                                ConnectionManager.desktopConnected = desktopWantsConnected
+                                if (!desktopWantsConnected) {
+                                    Log.i(TAG, "Heartbeat: Desktop requested disconnect")
+                                }
 
-                        val code = conn.responseCode
-                        Log.i(TAG, "Heartbeat: response=$code")
-                        if (code == 200) {
-                            val respBody = conn.inputStream.bufferedReader().readText()
-                            val resp = JSONObject(respBody)
-                            val desktopWantsConnected = resp.optBoolean("connected", false)
-                            ConnectionManager.desktopConnected = desktopWantsConnected
-                            if (!desktopWantsConnected) {
-                                Log.i(TAG, "Heartbeat: Desktop requested disconnect")
-                            }
-
-                            // If desktop has an active pairing session, clear local sessions
-                            // so we re-enter the pairing flow on the next loop iteration
-                            val pairingActive = resp.optBoolean("pairingActive", false)
-                            if (pairingActive) {
-                                Log.i(TAG, "Heartbeat: Desktop has active pairing, clearing local sessions to re-pair")
-                                securityManager.clearAllSessions()
-                                continue
+                                val pairingActive = resp.optBoolean("pairingActive", false)
+                                if (pairingActive) {
+                                    Log.i(TAG, "Heartbeat: Desktop has active pairing, clearing local sessions to re-pair")
+                                    securityManager.clearAllSessions()
+                                    continue
+                                }
+                            } else {
+                                ConnectionManager.desktopConnected = false
                             }
                         } else {
                             ConnectionManager.desktopConnected = false
+                            Log.e(TAG, "Heartbeat: all endpoints unreachable")
                         }
                     } catch (e: Exception) {
                         ConnectionManager.desktopConnected = false
@@ -222,71 +270,63 @@ class DeviceDoctorService : Service() {
                 }
 
                 // Phase 2: No sessions — try to auto-pair with desktop
+                val endpoints = getDesktopEndpoints()
                 try {
-                    Log.i(TAG, "Auto-pair: GET http://$DESKTOP_TUNNEL_HOST:$DESKTOP_TUNNEL_PORT/api/v1/pairing/info")
+                    val result = tryEndpoints(endpoints, "/api/v1/pairing/info")
+                    if (result != null) {
+                        val (conn, host, port) = result
+                        val responseCode = conn.responseCode
+                        Log.i(TAG, "Auto-pair: response=$responseCode from $host:$port")
 
-                    val url = URL("http://$DESKTOP_TUNNEL_HOST:$DESKTOP_TUNNEL_PORT/api/v1/pairing/info")
-                    val conn = url.openConnection() as HttpURLConnection
-                    conn.requestMethod = "GET"
-                    conn.connectTimeout = 5000
-                    conn.readTimeout = 5000
+                        if (responseCode == 200) {
+                            val body = conn.inputStream.bufferedReader().readText()
+                            Log.i(TAG, "Auto-pair: body=${body.take(200)}")
+                            val json = JSONObject(body)
 
-                    Log.i(TAG, "Auto-pair: connecting...")
-                    val responseCode = conn.responseCode
-                    Log.i(TAG, "Auto-pair: response=$responseCode")
+                            if (json.optString("status") == "paired") {
+                                Log.i(TAG, "Auto-pair: Desktop already paired, skipping")
+                                delay(10000)
+                                continue
+                            }
 
-                    if (responseCode == 200) {
-                        val body = conn.inputStream.bufferedReader().readText()
-                        Log.i(TAG, "Auto-pair: body=${body.take(200)}")
-                        val json = JSONObject(body)
+                            val pairingData = securityManager.processPairingQR(body)
+                            Log.i(TAG, "Auto-pair: Found desktop '${pairingData.desktopName}', completing pairing...")
 
-                        if (json.optString("status") == "paired") {
-                            Log.i(TAG, "Auto-pair: Desktop already paired, skipping")
-                            delay(10000)
-                            continue
-                        }
+                            val pairingResult = securityManager.completePairing(pairingData)
 
-                        val pairingData = securityManager.processPairingQR(body)
-                        Log.i(TAG, "Auto-pair: Found desktop '${pairingData.desktopName}', completing pairing...")
+                            val completeBody = JSONObject().apply {
+                                put("androidPublicKey", pairingResult.androidPublicKey)
+                                put("deviceId", pairingResult.session.deviceId)
+                                put("challenge", pairingResult.challenge)
+                                put("deviceName", "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
+                                put("manufacturer", android.os.Build.MANUFACTURER)
+                                put("model", android.os.Build.MODEL)
+                                put("androidVersion", android.os.Build.VERSION.RELEASE)
+                                put("androidPort", ConnectionManager.HTTP_PORT)
+                            }.toString()
 
-                        val result = securityManager.completePairing(pairingData)
+                            // Complete pairing via the same endpoint that responded
+                            val completeResult = tryEndpoints(
+                                listOf(host to port), "/api/v1/pairing/complete", "POST", completeBody,
+                                connectTimeout = 10000, readTimeout = 10000
+                            )
 
-                        val completeUrl = URL("http://$DESKTOP_TUNNEL_HOST:$DESKTOP_TUNNEL_PORT/api/v1/pairing/complete")
-                        val completeConn = completeUrl.openConnection() as HttpURLConnection
-                        completeConn.requestMethod = "POST"
-                        completeConn.setRequestProperty("Content-Type", "application/json")
-                        completeConn.doOutput = true
-                        completeConn.connectTimeout = 10000
-                        completeConn.readTimeout = 10000
+                            val completeCode = completeResult?.first?.responseCode ?: -1
+                            Log.i(TAG, "Auto-pair: complete response=$completeCode")
 
-                        val postBody = JSONObject().apply {
-                            put("androidPublicKey", result.androidPublicKey)
-                            put("deviceId", result.session.deviceId)
-                            put("challenge", result.challenge)
-                            put("deviceName", "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
-                            put("manufacturer", android.os.Build.MANUFACTURER)
-                            put("model", android.os.Build.MODEL)
-                            put("androidVersion", android.os.Build.VERSION.RELEASE)
-                            put("androidPort", ConnectionManager.HTTP_PORT)
-                        }.toString()
-
-                        completeConn.outputStream.use { it.write(postBody.toByteArray()) }
-
-                        val completeCode = completeConn.responseCode
-                        Log.i(TAG, "Auto-pair: complete response=$completeCode")
-
-                        if (completeCode == 200) {
-                            Log.i(TAG, "Auto-pair: Pairing successful!")
-                            // Don't set desktopConnected here — the next heartbeat
-                            // response from desktop is the authoritative connection state
-                            withContext(Dispatchers.Main) {
-                                updateNotification("Paired with ${pairingData.desktopName}")
+                            if (completeCode == 200) {
+                                Log.i(TAG, "Auto-pair: Pairing successful!")
+                                withContext(Dispatchers.Main) {
+                                    updateNotification("Paired with ${pairingData.desktopName}")
+                                }
+                            } else {
+                                Log.w(TAG, "Auto-pair: Desktop rejected pairing ($completeCode)")
                             }
                         } else {
-                            Log.w(TAG, "Auto-pair: Desktop rejected pairing ($completeCode)")
+                            Log.w(TAG, "Auto-pair: Desktop not ready ($responseCode)")
                         }
                     } else {
-                        Log.w(TAG, "Auto-pair: Desktop not ready ($responseCode)")
+                        Log.w(TAG, "Auto-pair: all endpoints unreachable")
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Auto-pair error: ${e.javaClass.simpleName}: ${e.message}")
@@ -302,9 +342,12 @@ class DeviceDoctorService : Service() {
         const val NOTIFICATION_ID = 1001
         const val ACTION_START = "com.devicedoctor.app.action.START"
         const val ACTION_STOP = "com.devicedoctor.app.action.STOP"
-        // For emulator testing: 10.0.2.2 maps to host's localhost
-        // For production tunnel: use "brjk01agv.localto.net" port 7580
-        const val DESKTOP_TUNNEL_HOST = "10.0.2.2"
-        const val DESKTOP_TUNNEL_PORT = 7771
+        // Desktop's HTTP server port (always 7771)
+        const val DESKTOP_PORT = 7771
+        // Tunnel relay for production (internet relay)
+        const val DESKTOP_TUNNEL_HOST = "brjk01agv.localto.net"
+        const val DESKTOP_TUNNEL_PORT = 7580
+        // Emulator loopback: 10.0.2.2 maps to host's localhost
+        const val EMULATOR_HOST = "10.0.2.2"
     }
 }
