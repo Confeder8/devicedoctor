@@ -39,10 +39,10 @@ import {
 
 interface Conversation {
   threadId: string
-  address: string
+  phoneNumber: string
   contactName?: string
-  snippet: string
-  timestamp: number
+  lastMessage: string
+  lastMessageTimestamp: number
   unreadCount: number
 }
 
@@ -138,7 +138,7 @@ const SMS: React.FC = () => {
     if (!connectedDevice || !selectedThread || !messageText.trim()) return
     setSending(true)
     try {
-      await window.electronAPI.sms.send(connectedDevice.deviceId, selectedThread.address, messageText.trim())
+      await window.electronAPI.sms.send(connectedDevice.deviceId, selectedThread.phoneNumber, messageText.trim())
       setMessageText('')
       await loadMessages(selectedThread)
       setSnackbar({ open: true, message: 'Message sent', severity: 'success' })
@@ -188,8 +188,8 @@ const SMS: React.FC = () => {
   }
 
   const filteredConversations = conversations.filter(c =>
-    (c.contactName?.toLowerCase() || c.address).includes(searchQuery.toLowerCase()) ||
-    c.snippet?.toLowerCase().includes(searchQuery.toLowerCase())
+    (c.contactName?.toLowerCase() || c.phoneNumber).includes(searchQuery.toLowerCase()) ||
+    c.lastMessage?.toLowerCase().includes(searchQuery.toLowerCase())
   )
 
   const formatTime = (ts: number) => {
@@ -276,14 +276,14 @@ const SMS: React.FC = () => {
                       background: 'linear-gradient(135deg, #6C5CE7 0%, #A29BFE 100%)',
                       fontSize: '1rem', fontWeight: 600,
                     }}>
-                      {(conv.contactName || conv.address || '?')[0]?.toUpperCase()}
+                      {(conv.contactName || conv.phoneNumber || '?')[0]?.toUpperCase()}
                     </Avatar>
                   </Badge>
                 </ListItemAvatar>
                 <ListItemText
                   primary={
                     <Typography variant="subtitle2" noWrap sx={{ fontWeight: conv.unreadCount ? 700 : 500, color: '#2D3436' }}>
-                      {conv.contactName || conv.address}
+                      {conv.contactName || conv.phoneNumber}
                     </Typography>
                   }
                   secondary={
@@ -291,12 +291,12 @@ const SMS: React.FC = () => {
                       fontSize: '0.78rem', color: conv.unreadCount ? '#2D3436' : '#636E72',
                       fontWeight: conv.unreadCount ? 500 : 400,
                     }}>
-                      {conv.snippet}
+                      {conv.lastMessage}
                     </Typography>
                   }
                 />
                 <Typography variant="caption" sx={{ color: '#B2BEC3', fontSize: '0.7rem', ml: 1, whiteSpace: 'nowrap' }}>
-                  {formatTime(conv.timestamp)}
+                  {formatTime(conv.lastMessageTimestamp)}
                 </Typography>
               </ListItemButton>
             ))
@@ -323,14 +323,14 @@ const SMS: React.FC = () => {
                 background: 'linear-gradient(135deg, #6C5CE7 0%, #A29BFE 100%)',
                 fontSize: '0.9rem', fontWeight: 600,
               }}>
-                {(selectedThread.contactName || selectedThread.address || '?')[0]?.toUpperCase()}
+                {(selectedThread.contactName || selectedThread.phoneNumber || '?')[0]?.toUpperCase()}
               </Avatar>
               <Box sx={{ flex: 1 }}>
                 <Typography variant="subtitle1" sx={{ fontWeight: 600, color: '#2D3436', lineHeight: 1.3 }}>
-                  {selectedThread.contactName || selectedThread.address}
+                  {selectedThread.contactName || selectedThread.phoneNumber}
                 </Typography>
                 <Typography variant="caption" sx={{ color: '#636E72' }}>
-                  {selectedThread.address}
+                  {selectedThread.phoneNumber}
                 </Typography>
               </Box>
               <Tooltip title="Call">

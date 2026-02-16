@@ -20,13 +20,13 @@ class SmsManagerWrapper(private val context: Context) {
         val offset = (params["offset"] as? Double)?.toInt() ?: 0
 
         try {
+            // The simple conversations view uses _id (not thread_id) and has no address column
             val uri = Uri.parse("content://mms-sms/conversations?simple=true")
             val projection = arrayOf(
-                Telephony.Sms.Conversations.THREAD_ID,
-                Telephony.Sms.Conversations.SNIPPET,
+                "_id",
+                "snippet",
                 "date",
-                "msg_count",
-                "address"
+                "message_count"
             )
 
             val cursor: Cursor? = context.contentResolver.query(
@@ -39,11 +39,13 @@ class SmsManagerWrapper(private val context: Context) {
 
             cursor?.use {
                 while (it.moveToNext()) {
-                    val threadId = it.getLong(it.getColumnIndexOrThrow(Telephony.Sms.Conversations.THREAD_ID))
-                    val snippet = it.getString(it.getColumnIndexOrThrow(Telephony.Sms.Conversations.SNIPPET)) ?: ""
+                    val threadId = it.getLong(it.getColumnIndexOrThrow("_id"))
+                    val snippet = it.getString(it.getColumnIndexOrThrow("snippet")) ?: ""
                     val date = it.getLong(it.getColumnIndexOrThrow("date"))
-                    val msgCount = it.getInt(it.getColumnIndexOrThrow("msg_count"))
-                    val address = it.getString(it.getColumnIndexOrThrow("address")) ?: "Unknown"
+                    val msgCount = it.getInt(it.getColumnIndexOrThrow("message_count"))
+
+                    // Look up the address from the most recent SMS in this thread
+                    val address = getThreadAddress(threadId)
 
                     conversations.add(
                         mapOf(
@@ -70,6 +72,29 @@ class SmsManagerWrapper(private val context: Context) {
                 "hasMore" to (conversations.size == limit)
             )
         )
+    }
+
+    /**
+     * Get the phone address for a conversation thread
+     */
+    private fun getThreadAddress(threadId: Long): String {
+        try {
+            val cursor = context.contentResolver.query(
+                Uri.parse("content://sms/"),
+                arrayOf(Telephony.Sms.ADDRESS),
+                "${Telephony.Sms.THREAD_ID} = ?",
+                arrayOf(threadId.toString()),
+                "${Telephony.Sms.DATE} DESC LIMIT 1"
+            )
+            cursor?.use {
+                if (it.moveToFirst()) {
+                    return it.getString(0) ?: "Unknown"
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        return "Unknown"
     }
 
     /**

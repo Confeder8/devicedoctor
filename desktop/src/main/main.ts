@@ -227,7 +227,28 @@ class DeviceDoctorApp {
                   storageAvailable: data.storageAvailable
                 })
 
-                // Auto-reconnect WiFiClient if device is supposed to be connected but WiFiClient is down
+                // Auto-connect: if device is paired but not connected, and we have a valid session,
+                // establish the WiFi link on first heartbeat (device just came online)
+                if (!device.connected && device.paired && !this.communicationEngine.isConnected(deviceId) && device.ipAddress) {
+                  const session = this.securityManager.getSession(deviceId)
+                  if (session && !this.reconnectAttempts.has(deviceId)) {
+                    console.log(`Heartbeat: auto-connecting paired device ${deviceId}`)
+                    this.reconnectAttempts.set(deviceId, { count: 0, nextAttemptAfter: 0 })
+                    this.communicationEngine.connectWithFallback(deviceId, device.ipAddress, this.store, device.androidPort || 8443).then((connInfo) => {
+                      console.log(`WiFiClient auto-connected via ${connInfo.route} to ${connInfo.host}:${connInfo.port}`)
+                      this.deviceManager.updateDevice(deviceId, { connected: true })
+                      this.reconnectAttempts.delete(deviceId)
+                      if (this.mainWindow) {
+                        this.mainWindow.webContents.send('device:connected', this.deviceManager.getDevice(deviceId))
+                      }
+                    }).catch((err: any) => {
+                      console.log(`WiFiClient auto-connect failed: ${err.message}`)
+                      this.reconnectAttempts.delete(deviceId)
+                    })
+                  }
+                }
+
+                // Re-connect WiFiClient if device is supposed to be connected but WiFiClient is down
                 if (device.connected && !this.communicationEngine.isConnected(deviceId) && device.ipAddress) {
                   const MAX_RECONNECT_ATTEMPTS = 5
                   const state = this.reconnectAttempts.get(deviceId) || { count: 0, nextAttemptAfter: 0 }

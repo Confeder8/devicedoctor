@@ -48,7 +48,7 @@ class FileManagerWrapper(private val context: Context) {
                     "name" to file.name,
                     "path" to file.absolutePath,
                     "type" to if (file.isDirectory) "directory" else "file",
-                    "size" to if (file.isFile) file.length() else 0,
+                    "size" to if (file.isFile) file.length() else 0L,
                     "mimeType" to getMimeType(file),
                     "modified" to file.lastModified(),
                     "permissions" to getPermissions(file)

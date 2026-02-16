@@ -119,7 +119,7 @@ const Files: React.FC = () => {
     setFilesLoading(true)
     try {
       const result = await window.electronAPI.files.list(connectedDevice.deviceId, path)
-      setFiles(result?.files || result || [])
+      setFiles(result?.entries || [])
       setCurrentPath(path)
     } catch (e) {
       console.error('Failed to load files:', e)
