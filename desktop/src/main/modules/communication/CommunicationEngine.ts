@@ -3,6 +3,7 @@
  */
 
 import * as crypto from 'crypto'
+import { execSync } from 'child_process'
 import { SecurityManager } from '../security/SecurityManager'
 import { WiFiClient } from './clients/WiFiClient'
 import { BluetoothClient } from './clients/BluetoothClient'
@@ -31,6 +32,7 @@ export class CommunicationEngine extends EventEmitter {
   private wifiClients: Map<string, WiFiClient> = new Map()
   private bluetoothClients: Map<string, BluetoothClient> = new Map()
   private connectionInfoMap: Map<string, ConnectionInfo> = new Map()
+  private adbForwards: Map<string, number> = new Map()  // deviceId → local forwarded port
 
   constructor(securityManager: SecurityManager) {
     super()
@@ -58,21 +60,26 @@ export class CommunicationEngine extends EventEmitter {
   }
 
   /**
-   * Connect with fallback: tries ADB (if localhost), then tunnel, then direct.
+   * Connect with fallback: tries ADB forward (if localhost/emulator), then tunnel, then direct.
    * First successful connection wins and is stored in connectionInfoMap.
    */
-  async connectWithFallback(deviceId: string, ipAddress: string, store?: Store): Promise<ConnectionInfo> {
+  async connectWithFallback(deviceId: string, ipAddress: string, store?: Store, androidPort: number = 8443): Promise<ConnectionInfo> {
     const isLocalhost = ipAddress === '127.0.0.1' || ipAddress === '::1'
-    const pairingPort = store ? (store.get('settings.pairingPort', 18443) as number) : 18443
     const tunnelHost = store ? (store.get('settings.tunnelHost', '') as string) : ''
     const tunnelPort = store ? (store.get('settings.tunnelPort', 0) as number) : 0
 
     interface Attempt { route: ConnectionRoute; host: string; port: number }
     const attempts: Attempt[] = []
 
-    // 1. ADB: only if IP is localhost
+    // 1. ADB forward: only if IP is localhost (emulator scenario)
+    //    Sets up adb forward from a local port to the emulator's Android HTTP port
     if (isLocalhost) {
-      attempts.push({ route: 'adb', host: '127.0.0.1', port: pairingPort })
+      try {
+        const localPort = this.setupAdbForward(deviceId, androidPort)
+        attempts.push({ route: 'adb', host: '127.0.0.1', port: localPort })
+      } catch (err: any) {
+        console.log(`adb forward setup failed: ${err.message}`)
+      }
     }
 
     // 2. Tunnel: if configured
@@ -82,7 +89,7 @@ export class CommunicationEngine extends EventEmitter {
 
     // 3. Direct WiFi
     if (!isLocalhost) {
-      attempts.push({ route: 'direct', host: ipAddress, port: 8443 })
+      attempts.push({ route: 'direct', host: ipAddress, port: androidPort })
     }
 
     for (const attempt of attempts) {
@@ -103,7 +110,48 @@ export class CommunicationEngine extends EventEmitter {
       }
     }
 
+    // Clean up ADB forward on failure
+    this.removeAdbForward(deviceId)
+
     throw new Error(`All connection attempts failed for ${ipAddress}`)
+  }
+
+  /**
+   * Set up ADB port forwarding from host to emulator/device.
+   * Returns the local port that forwards to the Android HTTP server.
+   */
+  private setupAdbForward(deviceId: string, androidPort: number): number {
+    // Remove any existing forward for this device
+    this.removeAdbForward(deviceId)
+
+    try {
+      // adb forward tcp:0 tcp:<androidPort> — lets adb pick a free local port
+      const output = execSync(`adb forward tcp:0 tcp:${androidPort}`, { timeout: 5000 }).toString().trim()
+      const localPort = parseInt(output, 10)
+      if (isNaN(localPort)) {
+        throw new Error(`Unexpected adb forward output: ${output}`)
+      }
+      this.adbForwards.set(deviceId, localPort)
+      console.log(`adb forward: localhost:${localPort} → emulator:${androidPort}`)
+      return localPort
+    } catch (err: any) {
+      throw new Error(`adb forward failed: ${err.message}`)
+    }
+  }
+
+  /**
+   * Remove ADB port forwarding for a device.
+   */
+  private removeAdbForward(deviceId: string): void {
+    const localPort = this.adbForwards.get(deviceId)
+    if (localPort) {
+      try {
+        execSync(`adb forward --remove tcp:${localPort}`, { timeout: 5000 })
+      } catch (_) {
+        // Ignore — port may already be released
+      }
+      this.adbForwards.delete(deviceId)
+    }
   }
 
   /**
@@ -129,6 +177,7 @@ export class CommunicationEngine extends EventEmitter {
       this.bluetoothClients.delete(deviceId)
     }
 
+    this.removeAdbForward(deviceId)
     this.connectionInfoMap.delete(deviceId)
     this.emit('disconnected', deviceId)
   }
