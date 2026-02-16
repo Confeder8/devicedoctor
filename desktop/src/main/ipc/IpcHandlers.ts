@@ -64,7 +64,8 @@ export function registerIpcHandlers(
       paired: true,
       lastSeen: Date.now(),
       pairedAt: Date.now(),
-      capabilities: ['sms', 'contacts', 'apps', 'files']
+      capabilities: ['sms', 'contacts', 'apps', 'files'],
+      androidPort: data.androidPort || 8443
     }
     deviceManager.addDevice(device)
 
@@ -72,8 +73,9 @@ export function registerIpcHandlers(
     await new Promise(resolve => setTimeout(resolve, 500))
 
     // Connect with fallback: ADB → tunnel → direct
+    const androidPort = data.androidPort || 8443
     try {
-      const connInfo = await communicationEngine.connectWithFallback(data.deviceId, ipAddress, store)
+      const connInfo = await communicationEngine.connectWithFallback(data.deviceId, ipAddress, store, androidPort)
       console.log(`WiFiClient connected via ${connInfo.route} to ${connInfo.host}:${connInfo.port} for device ${data.deviceId}`)
       deviceManager.updateDevice(data.deviceId, { connected: true })
     } catch (err) {
@@ -100,7 +102,7 @@ export function registerIpcHandlers(
     const device = deviceManager.getDevice(deviceId)
     if (!communicationEngine.isConnected(deviceId) && device && device.ipAddress) {
       try {
-        await communicationEngine.connectWithFallback(deviceId, device.ipAddress, store)
+        await communicationEngine.connectWithFallback(deviceId, device.ipAddress, store, device.androidPort || 8443)
       } catch (err) {
         console.error('Failed to create WiFiClient on connect:', err)
       }

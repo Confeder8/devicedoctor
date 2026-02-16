@@ -247,7 +247,7 @@ class DeviceDoctorApp {
                     const backoffMs = Math.min(2000 * Math.pow(2, state.count), 60000)
                     this.reconnectAttempts.set(deviceId, { count: attempt, nextAttemptAfter: Date.now() + backoffMs })
                     console.log(`Heartbeat: reconnect attempt ${attempt}/${MAX_RECONNECT_ATTEMPTS} for ${deviceId} (next backoff: ${backoffMs}ms)`)
-                    this.communicationEngine.connectWithFallback(deviceId, device.ipAddress, this.store).then((connInfo) => {
+                    this.communicationEngine.connectWithFallback(deviceId, device.ipAddress, this.store, device.androidPort || 8443).then((connInfo) => {
                       console.log(`WiFiClient auto-reconnected via ${connInfo.route} to ${connInfo.host}:${connInfo.port}`)
                       this.reconnectAttempts.delete(deviceId)
                     }).catch((err: any) => {
