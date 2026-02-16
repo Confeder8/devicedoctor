@@ -138,9 +138,14 @@ const SMS: React.FC = () => {
     if (!connectedDevice || !selectedThread || !messageText.trim()) return
     setSending(true)
     try {
-      await window.electronAPI.sms.send(connectedDevice.deviceId, selectedThread.phoneNumber, messageText.trim())
+      const result = await window.electronAPI.sms.send(connectedDevice.deviceId, selectedThread.phoneNumber, messageText.trim())
       setMessageText('')
-      await loadMessages(selectedThread)
+      // Optimistically add the sent message so it appears immediately
+      if (result?.message) {
+        setMessages(prev => [...prev, { ...result.message, threadId: selectedThread.threadId }])
+      }
+      // Refresh from server after a short delay to sync with content provider
+      setTimeout(() => loadMessages(selectedThread), 1000)
       setSnackbar({ open: true, message: 'Message sent', severity: 'success' })
     } catch (e: any) {
       setSnackbar({ open: true, message: e.message || 'Failed to send', severity: 'error' })
@@ -361,7 +366,7 @@ const SMS: React.FC = () => {
                         boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
                         position: 'relative',
                       }}>
-                        <Typography variant="body2" sx={{ fontSize: '0.85rem', lineHeight: 1.5, wordBreak: 'break-word' }}>
+                        <Typography variant="body2" sx={{ fontSize: '0.85rem', lineHeight: 1.5, wordBreak: 'break-word', color: 'inherit' }}>
                           {msg.body}
                         </Typography>
                         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 0.5, mt: 0.5 }}>

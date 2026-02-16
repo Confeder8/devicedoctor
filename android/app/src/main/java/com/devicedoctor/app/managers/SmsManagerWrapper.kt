@@ -182,15 +182,39 @@ class SmsManagerWrapper(private val context: Context) {
             val smsManager = context.getSystemService(SmsManager::class.java)
             smsManager.sendTextMessage(phoneNumber, null, message, null, null)
 
+            // Write the sent message to the SMS content provider so it appears
+            // in conversation queries (only the default SMS app does this automatically)
+            val now = System.currentTimeMillis()
+            val values = android.content.ContentValues().apply {
+                put(Telephony.Sms.ADDRESS, phoneNumber)
+                put(Telephony.Sms.BODY, message)
+                put(Telephony.Sms.TYPE, Telephony.Sms.MESSAGE_TYPE_SENT)
+                put(Telephony.Sms.DATE, now)
+                put(Telephony.Sms.READ, 1)
+            }
+            val insertedUri = context.contentResolver.insert(
+                Uri.parse("content://sms/sent"), values
+            )
+            val messageId = insertedUri?.lastPathSegment ?: now.toString()
+
             mapOf(
                 "status" to "success",
                 "data" to mapOf(
-                    "messageId" to System.currentTimeMillis().toString(),
-                    "sentTimestamp" to System.currentTimeMillis(),
-                    "deliveryStatus" to "sent"
+                    "messageId" to messageId,
+                    "sentTimestamp" to now,
+                    "deliveryStatus" to "sent",
+                    "message" to mapOf(
+                        "id" to messageId,
+                        "address" to phoneNumber,
+                        "body" to message,
+                        "timestamp" to now,
+                        "type" to "sent",
+                        "read" to true
+                    )
                 )
             )
         } catch (e: Exception) {
+            e.printStackTrace()
             mapOf(
                 "status" to "error",
                 "error" to mapOf(
